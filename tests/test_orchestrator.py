@@ -1,0 +1,649 @@
+from pathlib import Path
+
+import pytest
+
+from app import orchestrator
+from app.linear_api import Attachment, Comment
+
+
+def _payload(identifier="TES-700", issue_id="issue-uuid", project_name="Radio MCP",
+             description="", title="A test ticket", state_name="AI Implementation"):
+    return {
+        "action": "update",
+        "type": "Issue",
+        "data": {
+            "id": issue_id,
+            "identifier": identifier,
+            "title": title,
+            "description": description,
+            "project": {"name": project_name},
+            "state": {"name": state_name},
+        },
+        "updatedFrom": {"stateId": "prev"},
+    }
+
+
+@pytest.fixture
+def patched_orchestrator(monkeypatch):
+    """Replace every external dependency of orchestrator with a controllable stub."""
+    state = {
+        "fetched_for": [],
+        "downloaded_into": [],
+        "comments": [],
+        "state_changes": [],
+    }
+
+    def fake_fetch_attachments(issue_id, client=None):
+        state["fetched_for"].append(issue_id)
+        return state.get("_attachments_to_return", [])
+
+    def fake_fetch_comments(issue_id, client=None):
+        return state.get("_comments_to_return", [])
+
+    def fake_download(att_list, target_dir, api_key=None, client=None):
+        state["downloaded_into"].append(target_dir)
+        return [target_dir / a.title for a in att_list]
+
+    def fake_post(issue_id, body, client=None):
+        state["comments"].append({"issue_id": issue_id, "body": body})
+        return f"comment-id-{len(state['comments'])}"
+
+    def fake_state_id(team_id, name, client=None):
+        return f"state-id-for-{name}"
+
+    def fake_set_state(issue_id, state_id, client=None):
+        state["state_changes"].append({"issue_id": issue_id, "state_id": state_id})
+        return True
+
+    monkeypatch.setattr(orchestrator.linear_api, "fetch_issue_attachments", fake_fetch_attachments)
+    monkeypatch.setattr(orchestrator.linear_api, "fetch_issue_comments", fake_fetch_comments)
+    monkeypatch.setattr(orchestrator.attachments_mod, "download_attachments", fake_download)
+    monkeypatch.setattr(orchestrator.linear_api, "post_comment", fake_post)
+    monkeypatch.setattr(orchestrator.linear_api, "fetch_workflow_state_id", fake_state_id)
+    monkeypatch.setattr(orchestrator.linear_api, "set_issue_state", fake_set_state)
+    # Bust the state-id cache so each test starts clean
+    monkeypatch.setattr(orchestrator, "_state_id_cache", {})
+
+    return state
+
+
+def test_stage1_runs_claude_posts_comment_sets_in_review(patched_orchestrator):
+    orchestrator.orchestrate_start(_payload(), delivery_id="d-1")
+
+    assert patched_orchestrator["fetched_for"] == ["issue-uuid"]
+    assert len(patched_orchestrator["comments"]) == 1
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "Coding Agent Run" in body
+    assert "(mocked claude output)" in body  # from conftest run_cli stub
+    assert "TES-700" in body
+    assert "d-1" in body
+    # Status moved to In Review
+    assert patched_orchestrator["state_changes"] == [
+        {"issue_id": "issue-uuid", "state_id": "state-id-for-In Review"}
+    ]
+
+
+def test_stage1_with_attachments_downloads_into_per_ticket_folder(patched_orchestrator, tmp_path):
+    patched_orchestrator["_attachments_to_return"] = [
+        Attachment(id="a1", title="Spec.pdf", url="https://uploads.linear.app/a/Spec.pdf", subtitle=None),
+        Attachment(id="a2", title="notes.md", url="https://cdn.example.com/notes.md", subtitle=None),
+    ]
+    p = _payload(identifier="TES-701", description=f"folder: {tmp_path}")
+
+    orchestrator.orchestrate_start(p, delivery_id="d-2")
+
+    assert patched_orchestrator["downloaded_into"][0] == tmp_path / "linear" / "TES-701" / "attachments"
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "Spec.pdf" in body
+    assert "notes.md" in body
+
+
+def test_stage1_posts_error_comment_and_reraises(monkeypatch, patched_orchestrator):
+    def exploding_fetch(issue_id, client=None):
+        raise RuntimeError("boom — graphql down")
+    monkeypatch.setattr(orchestrator.linear_api, "fetch_issue_attachments", exploding_fetch)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        orchestrator.orchestrate_start(_payload(identifier="TES-702"), delivery_id="d-3")
+
+    # Best-effort error comment still gets posted before the re-raise, so the
+    # Linear ticket reflects the failure even though the worker will also
+    # record it in the queue.
+    assert len(patched_orchestrator["comments"]) == 1
+    assert "failed" in patched_orchestrator["comments"][0]["body"].lower()
+
+
+def test_stage1_prompt_carries_progress_instructions_with_issue_id(monkeypatch, patched_orchestrator):
+    """Claude needs to know it should post 🔄 progress lines and which Linear issue to post against. (TES-608)"""
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        captured["prompt"] = prompt
+        return runner_mod.RunResult(0, "ok", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    orchestrator.orchestrate_start(_payload(identifier="TES-PROG", issue_id="iss-prog"), delivery_id="d-prog")
+
+    prompt = captured["prompt"]
+    assert "Progress updates" in prompt
+    assert "🔄" in prompt
+    assert "iss-prog" in prompt  # the issue UUID Claude needs for save_comment
+    assert "save_comment" in prompt
+
+
+def test_proxy_prompt_carries_progress_instructions(monkeypatch, patched_orchestrator, tmp_path):
+    monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
+    monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", lambda *a, **kw: "att-x")
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        captured["prompt"] = prompt
+        cwd.mkdir(parents=True, exist_ok=True)
+        return runner_mod.RunResult(0, "ok", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-PXP", issue_id="iss-pxp", project_name="⚡ Ad-hoc Proxy")
+    orchestrator.orchestrate_proxy(p, delivery_id="px-prog")
+
+    prompt = captured["prompt"]
+    assert "Progress updates" in prompt
+    assert "iss-pxp" in prompt
+
+
+def test_progress_comments_excluded_from_followup_context(monkeypatch, patched_orchestrator):
+    """🔄 comments Claude posted during a previous run must not flow back as follow-up context. (TES-608)"""
+    from app.linear_api import Comment as C
+    patched_orchestrator["_comments_to_return"] = [
+        C(id="c1", body="🔄 Schritt 1: web search starting", created_at="2026-04-25T10:00:00Z",
+          author_name="Bastian", is_executor_comment=True),
+        C(id="c2", body="Bitte aufpassen dass keine paywalled sources reinkommen",
+          created_at="2026-04-25T10:01:00Z", author_name="Bastian", is_executor_comment=False),
+    ]
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        captured["prompt"] = prompt
+        return runner_mod.RunResult(0, "ok", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    orchestrator.orchestrate_start(_payload(identifier="TES-FILT"), delivery_id="d-filt")
+
+    prompt = captured["prompt"]
+    # Real follow-up still in
+    assert "paywalled sources" in prompt
+    # 🔄 progress comment filtered out
+    assert "Schritt 1: web search starting" not in prompt
+
+
+def test_stage1_appends_nonexecutor_comments_as_follow_up_context(monkeypatch, patched_orchestrator):
+    """Follow-up comments added after ticket creation must reach Claude as context."""
+    patched_orchestrator["_comments_to_return"] = [
+        Comment(
+            id="c1",
+            body="Please also handle edge case X",
+            created_at="2026-04-20T10:00:00Z",
+            author_name="Bastian",
+            is_executor_comment=False,
+        ),
+        Comment(
+            id="c2",
+            body="\U0001f916 **Linear-Executor** — Claude Code Run\nOutput from last run",
+            created_at="2026-04-20T10:05:00Z",
+            author_name="Bastian",
+            is_executor_comment=True,
+        ),
+        Comment(
+            id="c3",
+            body="And retry with timeout 30s",
+            created_at="2026-04-20T10:10:00Z",
+            author_name="Bastian",
+            is_executor_comment=False,
+        ),
+    ]
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        captured["prompt"] = prompt
+        return runner_mod.RunResult(0, "ok", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    orchestrator.orchestrate_start(_payload(identifier="TES-710"), delivery_id="d-comments")
+
+    prompt = captured["prompt"]
+    assert "Follow-up Instructions" in prompt
+    assert "Please also handle edge case X" in prompt
+    assert "And retry with timeout 30s" in prompt
+    # Own executor comments must be filtered out
+    assert "Output from last run" not in prompt
+
+
+def test_stage1_without_follow_up_comments_omits_section(monkeypatch, patched_orchestrator):
+    """No non-executor comments → no 'Follow-up Instructions' section in the prompt."""
+    patched_orchestrator["_comments_to_return"] = []
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        captured["prompt"] = prompt
+        return runner_mod.RunResult(0, "ok", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    orchestrator.orchestrate_start(_payload(identifier="TES-711"), delivery_id="d-no-comments")
+
+    assert "Follow-up Instructions" not in captured["prompt"]
+
+
+def test_proxy_appends_nonexecutor_comments_as_follow_up_context(monkeypatch, patched_orchestrator, tmp_path):
+    monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
+    patched_orchestrator["_comments_to_return"] = [
+        Comment(
+            id="c1",
+            body="Bitte auch auf Deutsch zusammenfassen",
+            created_at="2026-04-20T10:00:00Z",
+            author_name="Bastian",
+            is_executor_comment=False,
+        ),
+    ]
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        captured["prompt"] = prompt
+        return runner_mod.RunResult(0, "ok", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-PROXY-COMMENTS", project_name="⚡ Ad-hoc Proxy")
+    orchestrator.orchestrate_proxy(p, delivery_id="px-comments")
+
+    assert "Follow-up Instructions" in captured["prompt"]
+    assert "auf Deutsch zusammenfassen" in captured["prompt"]
+
+
+def test_stage1_without_issue_id_skips_comment_and_state(patched_orchestrator):
+    p = _payload()
+    p["data"]["id"] = ""
+    orchestrator.orchestrate_start(p)
+
+    assert patched_orchestrator["comments"] == []
+    assert patched_orchestrator["state_changes"] == []
+
+
+def test_stage2_posts_confirmation_comment_no_state_change(patched_orchestrator):
+    orchestrator.orchestrate_complete(_payload(state_name="Done"), delivery_id="d-4")
+
+    assert len(patched_orchestrator["comments"]) == 1
+    assert "Marked Done" in patched_orchestrator["comments"][0]["body"]
+    # Stage 2 (no-op merge phase) does not change state itself
+    assert patched_orchestrator["state_changes"] == []
+
+
+# --- Phase 3b: git-aware paths --------------------------------------------------
+
+
+def _make_real_repo(tmp_path):
+    """Build a tiny initialized git repo for end-to-end orchestrator tests."""
+    from app import git_ops as g
+    r = tmp_path / "origin"
+    r.mkdir()
+    g._run(["git", "init", "-b", "main"], cwd=r)
+    g._run(["git", "config", "user.email", "test@example.com"], cwd=r)
+    g._run(["git", "config", "user.name", "Test"], cwd=r)
+    (r / "README.md").write_text("hello\n")
+    g._run(["git", "add", "-A"], cwd=r)
+    g._run(["git", "commit", "-m", "init"], cwd=r)
+    return r
+
+
+def test_stage1_creates_worktree_when_folder_is_git_repo(monkeypatch, patched_orchestrator, tmp_path):
+    repo = _make_real_repo(tmp_path)
+    # Re-enable real is_git_repo so orchestrator detects the temp repo
+    monkeypatch.setattr("app.orchestrator.git_ops.is_git_repo", lambda p: True)
+    monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
+
+    p = _payload(identifier="TES-901", description=f"folder: {repo}")
+    orchestrator.orchestrate_start(p, delivery_id="d-git")
+
+    worktree = tmp_path / "tickets" / "TES-901" / "worktree"
+    assert worktree.exists()
+    assert (worktree / "README.md").exists()
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "branch: `ticket/TES-901`" in body
+
+
+def test_stage1_includes_diff_in_comment_when_claude_changes_files(monkeypatch, patched_orchestrator, tmp_path):
+    repo = _make_real_repo(tmp_path)
+    monkeypatch.setattr("app.orchestrator.git_ops.is_git_repo", lambda p: True)
+    monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
+
+    # Mock claude to write a file in the worktree before returning
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        (cwd / "claude_made_this.txt").write_text("hello from claude\n")
+        return runner_mod.RunResult(0, "wrote claude_made_this.txt", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-902", description=f"folder: {repo}")
+    orchestrator.orchestrate_start(p, delivery_id="d-diff")
+
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "claude_made_this.txt" in body
+    assert "Diff vs. main" in body
+    assert "Commits on branch" in body
+
+
+def test_stage2_merges_worktree_into_main_and_cleans_up(monkeypatch, patched_orchestrator, tmp_path):
+    repo = _make_real_repo(tmp_path)
+    monkeypatch.setattr("app.orchestrator.git_ops.is_git_repo", lambda p: True)
+    monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
+
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        (cwd / "feature.txt").write_text("feature content\n")
+        return runner_mod.RunResult(0, "added feature", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    # Run stage 1 to create worktree + branch + commit
+    p = _payload(identifier="TES-903", description=f"folder: {repo}")
+    orchestrator.orchestrate_start(p, delivery_id="d-merge-1")
+    assert (tmp_path / "tickets" / "TES-903" / "worktree" / "feature.txt").exists()
+
+    # Now stage 2: merge
+    orchestrator.orchestrate_complete(p, delivery_id="d-merge-2")
+
+    # Feature landed on main
+    assert (repo / "feature.txt").exists()
+    # Worktree gone
+    assert not (tmp_path / "tickets" / "TES-903" / "worktree").exists()
+    # Last comment is the merge confirmation
+    last = patched_orchestrator["comments"][-1]["body"]
+    assert "Merged" in last
+    assert "no `origin` remote" in last  # tmp repo has no remote
+
+
+def test_stage2_handles_merge_conflict_and_rolls_back_status(monkeypatch, patched_orchestrator, tmp_path):
+    from app import git_ops as g
+    repo = _make_real_repo(tmp_path)
+    monkeypatch.setattr("app.orchestrator.git_ops.is_git_repo", lambda p: True)
+    monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
+
+    # Stage 1 — branch edits README
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        (cwd / "README.md").write_text("from branch\n")
+        return runner_mod.RunResult(0, "edited readme", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-904", description=f"folder: {repo}")
+    orchestrator.orchestrate_start(p, delivery_id="d-c1")
+
+    # Diverge main: edit README differently and commit
+    (repo / "README.md").write_text("from main side\n")
+    g._run(["git", "add", "-A"], cwd=repo)
+    g._run(["git", "commit", "-m", "main edit"], cwd=repo)
+
+    # Stage 2 — should hit a conflict
+    orchestrator.orchestrate_complete(p, delivery_id="d-c2")
+
+    last = patched_orchestrator["comments"][-1]["body"]
+    assert "Conflict" in last or "conflict" in last
+    # State rolled back to In Review
+    assert any(s["state_id"] == "state-id-for-In Review" for s in patched_orchestrator["state_changes"][1:])
+
+
+def test_stage2_removes_empty_ticket_dir_after_merge(monkeypatch, patched_orchestrator, tmp_path):
+    repo = _make_real_repo(tmp_path)
+    monkeypatch.setattr("app.orchestrator.git_ops.is_git_repo", lambda p: True)
+    monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
+
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        (cwd / "x.txt").write_text("x\n")
+        return runner_mod.RunResult(0, "ok", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-906", description=f"folder: {repo}")
+    orchestrator.orchestrate_start(p, delivery_id="d-rm-1")
+    orchestrator.orchestrate_complete(p, delivery_id="d-rm-2")
+
+    # ticket_dir is gone after merge + cleanup
+    assert not (tmp_path / "tickets" / "TES-906").exists()
+
+
+def test_stage2_keeps_ticket_dir_if_files_remain(monkeypatch, patched_orchestrator, tmp_path):
+    """If anything besides the worktree (e.g. attachments, user files) is in
+    the ticket dir, leave it alone."""
+    repo = _make_real_repo(tmp_path)
+    monkeypatch.setattr("app.orchestrator.git_ops.is_git_repo", lambda p: True)
+    monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
+
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        (cwd / "y.txt").write_text("y\n")
+        return runner_mod.RunResult(0, "ok", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-907", description=f"folder: {repo}")
+    orchestrator.orchestrate_start(p, delivery_id="d-keep-1")
+
+    # Drop a sticky note in the ticket dir before merge
+    (tmp_path / "tickets" / "TES-907" / "notes.txt").write_text("don't delete me\n")
+
+    orchestrator.orchestrate_complete(p, delivery_id="d-keep-2")
+
+    # Worktree gone but ticket_dir survives because of the sticky note
+    assert not (tmp_path / "tickets" / "TES-907" / "worktree").exists()
+    assert (tmp_path / "tickets" / "TES-907" / "notes.txt").exists()
+
+
+def test_stage2_noop_path_also_cleans_empty_ticket_dir(monkeypatch, patched_orchestrator, tmp_path):
+    monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
+    # Create an empty ticket dir manually (simulating the non-git fallback case)
+    td = tmp_path / "tickets" / "TES-908"
+    td.mkdir(parents=True)
+
+    p = _payload(identifier="TES-908", state_name="Done")
+    orchestrator.orchestrate_complete(p, delivery_id="d-noop")
+
+    assert not td.exists()
+
+
+def test_proxy_uploads_new_files_as_linear_attachments(monkeypatch, patched_orchestrator, tmp_path):
+    """Files Claude writes during a proxy run get auto-attached to the ticket
+    and surface in the final comment."""
+    monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
+
+    attached: list[tuple[str, Path, str | None]] = []
+
+    def fake_attach(issue_id, local_path, *, title=None, subtitle=None, content_type=None, client=None):
+        attached.append((issue_id, local_path, title))
+        return f"att-{local_path.name}"
+
+    monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", fake_attach)
+
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        cwd.mkdir(parents=True, exist_ok=True)
+        (cwd / "report.md").write_text("# notes\n")
+        (cwd / "data.json").write_text('{"x": 1}\n')
+        return runner_mod.RunResult(0, "wrote files", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-FILES", project_name="⚡ Ad-hoc Proxy")
+    orchestrator.orchestrate_proxy(p, delivery_id="px-files")
+
+    # Both files attached to the ticket
+    issue_ids = [a[0] for a in attached]
+    names = sorted(a[1].name for a in attached)
+    assert issue_ids == ["issue-uuid", "issue-uuid"]
+    assert names == ["data.json", "report.md"]
+
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "Files generated" in body
+    assert "report.md" in body
+    assert "data.json" in body
+
+
+def test_proxy_omits_files_section_when_nothing_written(monkeypatch, patched_orchestrator, tmp_path):
+    monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
+    monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", lambda *a, **kw: "att-x")
+
+    p = _payload(identifier="TES-NOFILES", project_name="⚡ Ad-hoc Proxy")
+    orchestrator.orchestrate_proxy(p, delivery_id="px-nofiles")
+
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "Files generated" not in body
+
+
+def test_proxy_reports_upload_failure_in_comment(monkeypatch, patched_orchestrator, tmp_path):
+    monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
+
+    def boom_attach(*a, **kw):
+        raise RuntimeError("Linear is down")
+    monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", boom_attach)
+
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        cwd.mkdir(parents=True, exist_ok=True)
+        (cwd / "out.md").write_text("hi\n")
+        return runner_mod.RunResult(0, "wrote out.md", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-FAIL-UPLOAD", project_name="⚡ Ad-hoc Proxy")
+    orchestrator.orchestrate_proxy(p, delivery_id="px-fail")
+
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "out.md" in body
+    assert "upload failed" in body
+    assert "Linear is down" in body
+
+
+def test_proxy_runs_in_tmp_and_sets_state_to_done(monkeypatch, patched_orchestrator, tmp_path):
+    """Phase 4 — orchestrate_proxy uses /tmp, posts comment, sets Done directly."""
+    monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
+
+    p = _payload(
+        identifier="TES-PROXY-1",
+        title="Was ist der Sinn des Lebens?",
+        description="Eine kurze Antwort genügt.",
+        project_name="⚡ Ad-hoc Proxy",
+    )
+
+    orchestrator.orchestrate_proxy(p, delivery_id="px-1")
+
+    # cwd was created in tmp
+    assert (tmp_path / "proxy-base" / "TES-PROXY-1").exists()
+    # Comment posted
+    assert len(patched_orchestrator["comments"]) == 1
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "Ad-hoc Proxy" in body
+    assert "(mocked claude output)" in body
+    # State moved straight to Done
+    assert patched_orchestrator["state_changes"] == [
+        {"issue_id": "issue-uuid", "state_id": "state-id-for-Done"}
+    ]
+
+
+def test_proxy_includes_attachments_in_prompt(monkeypatch, patched_orchestrator, tmp_path):
+    monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
+    patched_orchestrator["_attachments_to_return"] = [
+        Attachment(id="a1", title="data.csv", url="https://uploads.linear.app/data.csv", subtitle=None),
+    ]
+
+    captured_prompt = {"value": ""}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        captured_prompt["value"] = prompt
+        cwd.mkdir(parents=True, exist_ok=True)
+        return runner_mod.RunResult(0, "analyzed", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-PROXY-2", title="Analysiere data.csv", project_name="⚡ Ad-hoc Proxy")
+    orchestrator.orchestrate_proxy(p, delivery_id="px-2")
+
+    # Attachments dir mentioned in prompt so Claude can find them
+    assert "TES-PROXY-2/attachments" in captured_prompt["value"]
+
+
+def test_proxy_posts_error_and_reraises(monkeypatch, patched_orchestrator, tmp_path):
+    monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
+    from app import runner as runner_mod
+    def boom(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        raise RuntimeError("subprocess died")
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", boom)
+
+    p = _payload(identifier="TES-PROXY-3", project_name="⚡ Ad-hoc Proxy")
+    with pytest.raises(RuntimeError, match="subprocess died"):
+        orchestrator.orchestrate_proxy(p, delivery_id="px-3")
+
+    assert len(patched_orchestrator["comments"]) == 1
+    assert "proxy failed" in patched_orchestrator["comments"][0]["body"].lower()
+
+
+def test_stage2_aborts_when_main_repo_is_dirty(monkeypatch, patched_orchestrator, tmp_path):
+    repo = _make_real_repo(tmp_path)
+    monkeypatch.setattr("app.orchestrator.git_ops.is_git_repo", lambda p: True)
+    monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
+
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        (cwd / "x.txt").write_text("x\n")
+        return runner_mod.RunResult(0, "ok", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-905", description=f"folder: {repo}")
+    orchestrator.orchestrate_start(p, delivery_id="d-d1")
+
+    # Make main repo dirty
+    (repo / "untracked.txt").write_text("dirty\n")
+
+    orchestrator.orchestrate_complete(p, delivery_id="d-d2")
+
+    last = patched_orchestrator["comments"][-1]["body"]
+    assert "uncommitted changes" in last
+    # Worktree still exists since we aborted
+    assert (tmp_path / "tickets" / "TES-905" / "worktree").exists()
+
+
+def test_stage1_uploads_new_files_as_linear_attachments(monkeypatch, patched_orchestrator, tmp_path):
+    """Files Claude writes into the cwd during a non-git stage1 run get
+    auto-attached to the ticket and surface in the run-comment (TES-615)."""
+    cwd = tmp_path / "stage1-folder"
+    cwd.mkdir()
+    monkeypatch.setattr(orchestrator, "resolve_folder",
+                        lambda data: type("F", (), {"strategy": "fallback", "path": cwd})())
+
+    attached: list[tuple[str, Path, str | None]] = []
+    def fake_attach(issue_id, local_path, *, title=None, subtitle=None, content_type=None, client=None):
+        attached.append((issue_id, local_path, title))
+        return f"att-{local_path.name}"
+    monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", fake_attach)
+
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        cwd.mkdir(parents=True, exist_ok=True)
+        (cwd / "report.md").write_text("# generated\n")
+        (cwd / "data.csv").write_text("a,b,c\n1,2,3\n")
+        return runner_mod.RunResult(0, "wrote files", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    orchestrator.orchestrate_start(_payload(identifier="TES-ATT1"), delivery_id="d-att1")
+
+    names = sorted(a[1].name for a in attached)
+    assert names == ["data.csv", "report.md"]
+
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "Files attached to ticket" in body
+    assert "report.md" in body
+    assert "data.csv" in body
+
+
+def test_stage1_omits_files_section_when_nothing_written(monkeypatch, patched_orchestrator, tmp_path):
+    """If Claude doesn't touch any file in cwd, no upload section is rendered."""
+    cwd = tmp_path / "stage1-empty"
+    cwd.mkdir()
+    monkeypatch.setattr(orchestrator, "resolve_folder",
+                        lambda data: type("F", (), {"strategy": "fallback", "path": cwd})())
+    monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", lambda *a, **kw: "att-x")
+
+    orchestrator.orchestrate_start(_payload(identifier="TES-ATT2"), delivery_id="d-att2")
+
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "Files attached to ticket" not in body

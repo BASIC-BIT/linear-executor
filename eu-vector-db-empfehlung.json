@@ -1,0 +1,31 @@
+{
+  "ticket": "TES-633",
+  "context": "EU-GDPR-konforme RAG-Pipeline, Erkenntnisse aus TES-614 und TES-630",
+  "primary_recommendation": {
+    "name": "Qdrant",
+    "deployment": "self-hosted in EU-Region",
+    "license": "Apache-2.0",
+    "reasons": [
+      "Volle Datenhoheit (kein US-Cloud-Act-Exposure)",
+      "Open-Source, self-hostable auf EU-VPS",
+      "Payload-Filter und Hybrid-Search nativ",
+      "Rust-Core mit vorhersehbaren Latenzen"
+    ]
+  },
+  "fallback": {
+    "name": "Weaviate",
+    "deployment": "self-hosted oder EU-Cloud-Region",
+    "use_when": "Multi-Tenancy oder GraphQL-Native erforderlich"
+  },
+  "not_recommended": [
+    {
+      "name": "Pinecone",
+      "reason": "US-only Managed-Service, kein EU-Self-Host"
+    },
+    {
+      "name": "Chroma",
+      "reason": "Single-Node, keine Production-EU-Story"
+    }
+  ],
+  "source_tickets": ["TES-614", "TES-630"]
+}

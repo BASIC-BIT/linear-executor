@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / Runtime
+*.log
+logs/
+*.db
+*.sqlite
+*.sqlite3
+state/
+proxy-outputs/
+
+# Worktrees
+.worktrees/
+
+# Claude Code project-local runtime state
+.claude/
+
+# Local config drafts (may contain secrets)
+*.draft
