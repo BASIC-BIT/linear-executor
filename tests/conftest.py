@@ -45,6 +45,7 @@ def _no_real_cli(monkeypatch):
             stderr="",
             timed_out=False,
             cli=cli,
+            timeout_used=timeout,
         )
 
     def fake_run_claude(prompt, cwd, *, timeout=runner.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):

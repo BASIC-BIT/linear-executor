@@ -213,8 +213,20 @@ Most installs only need (1) and (3): the `folder:` description override for ad-h
 |---|---|
 | `cli:claude` / `cli:opencode` / `cli:codex` / `cli:gemini` / `cli:forge` | choose the coding CLI for this ticket |
 | `model:<id>` | override the registry default model (e.g. `model:opencode-go/glm-5.1`) |
+| `timeout:<sec>` | override the per-path default timeout (e.g. `timeout:1800` for a 30-min run, or `timeout:60` for a quick smoke). Trailing `s` accepted (`timeout:1800s`). Clamped to a 2 h hard cap. |
 
-Group both as Linear label groups for a cleaner picker (mutually exclusive).
+Group all three as Linear label groups for a cleaner picker (each group mutually exclusive).
+
+### Timeout defaults
+
+The two execution paths have very different expected workloads, so they have separate defaults:
+
+| Path | Use case | Default | Env var |
+|---|---|---|---|
+| Stage 1 (build-with-merge) | real coding / multi-step research | **1200 s** (20 min) | `LINEAR_EXECUTOR_TIMEOUT_STAGE1` |
+| Proxy (ad-hoc Q&A) | transcribe / scrape / summarise | **300 s** (5 min) | `LINEAR_EXECUTOR_TIMEOUT_PROXY` |
+
+A `timeout:<sec>` label on a ticket overrides whichever default applies to that path. Invalid / non-positive label values are ignored with a warning, so a typo can't accidentally apply a zero-timeout. Values above the hard cap (`runner.TIMEOUT_HARD_CAP_SECONDS`, 2 h by default) are clamped — split very long-running tasks into smaller tickets instead.
 
 ## Repo layout
 

@@ -38,7 +38,7 @@ from app import job_registry
 from app import linear_api
 from app import queue as q
 from app import runner
-from app.cli_registry import resolve_cli, resolve_model
+from app.cli_registry import resolve_cli, resolve_model, resolve_timeout
 from app.folders import resolve_folder
 
 
@@ -92,6 +92,27 @@ def _truncate(s: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     if len(s) <= limit:
         return s
     return s[:limit] + f"\n\n…[truncated, {len(s) - limit} more chars]"
+
+
+def _pick_timeout(labels, default: int, identifier: str) -> int:
+    """Apply per-ticket ``timeout:<sec>`` Linear label override on top of
+    a path-specific default, clamped to ``runner.TIMEOUT_HARD_CAP_SECONDS``.
+
+    Logs the chosen value so the operator can correlate Linear-side label
+    changes with subprocess behaviour without digging through the runner.
+    """
+    override = resolve_timeout(labels)
+    chosen = override if override is not None else default
+    if chosen > runner.TIMEOUT_HARD_CAP_SECONDS:
+        logger.warning(
+            "timeout — id=%s requested %ds exceeds hard cap %ds; clamping",
+            identifier, chosen, runner.TIMEOUT_HARD_CAP_SECONDS,
+        )
+        chosen = runner.TIMEOUT_HARD_CAP_SECONDS
+    if override is not None:
+        logger.info("timeout — id=%s using label override %ds (default was %ds)",
+                    identifier, chosen, default)
+    return chosen
 
 
 SAFETY_RULES = """
@@ -230,7 +251,7 @@ def _compose_run_comment(
 
     lines.append(f"**Output** (backend: `{run_result.cli}`)")
     if run_result.timed_out:
-        lines.append(f"⏱ timed out after {runner.DEFAULT_TIMEOUT_SECONDS}s")
+        lines.append(f"⏱ timed out after {run_result.timeout_used}s")
     elif run_result.exit_code != 0:
         lines.append(f"⚠ exit code {run_result.exit_code}")
     if run_result.stdout.strip():
@@ -393,14 +414,16 @@ def orchestrate_start(
         )
         cli = resolve_cli(data.get("labels"))
         model = resolve_model(data.get("labels"))
+        timeout = _pick_timeout(data.get("labels"), runner.DEFAULT_TIMEOUT_STAGE1, identifier)
         logger.info(
-            "stage1 — id=%s backend=%s model=%s",
-            identifier, cli, model or "(default)",
+            "stage1 — id=%s backend=%s model=%s timeout=%ds",
+            identifier, cli, model or "(default)", timeout,
         )
         files_before = _snapshot_files(cwd)
         try:
             run_result = runner.run_cli(
                 cli, prompt, cwd,
+                timeout=timeout,
                 on_start=lambda p: job_registry.register(identifier, p),
                 model=model,
             )
@@ -584,14 +607,16 @@ def orchestrate_proxy(payload: dict, delivery_id: str | None = None) -> None:
 
         cli = resolve_cli(data.get("labels"))
         model = resolve_model(data.get("labels"))
+        timeout = _pick_timeout(data.get("labels"), runner.DEFAULT_TIMEOUT_PROXY, identifier)
         logger.info(
-            "proxy — id=%s backend=%s model=%s",
-            identifier, cli, model or "(default)",
+            "proxy — id=%s backend=%s model=%s timeout=%ds",
+            identifier, cli, model or "(default)", timeout,
         )
         files_before = _snapshot_files(cwd)
         try:
             run_result = runner.run_cli(
                 cli, prompt, cwd,
+                timeout=timeout,
                 on_start=lambda p: job_registry.register(identifier, p),
                 model=model,
             )
@@ -610,7 +635,7 @@ def orchestrate_proxy(payload: dict, delivery_id: str | None = None) -> None:
 
         lines = [HEADER_PROXY, "", f"_backend: `{run_result.cli}`_", ""]
         if run_result.timed_out:
-            lines.append(f"⏱ timed out after {runner.DEFAULT_TIMEOUT_SECONDS}s")
+            lines.append(f"⏱ timed out after {run_result.timeout_used}s")
         elif run_result.exit_code != 0:
             lines.append(f"⚠ exit code {run_result.exit_code}")
         lines.append("")

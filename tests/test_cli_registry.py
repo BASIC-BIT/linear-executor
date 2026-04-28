@@ -9,6 +9,7 @@ from app.cli_registry import (
     DEFAULT_CLI,
     build_argv,
     resolve_cli,
+    resolve_timeout,
 )
 
 
@@ -70,3 +71,61 @@ def test_forge_in_registry():
     """TES-646: forge added in this iteration — guard against accidental removal."""
     assert "forge" in CLI_REGISTRY
     assert CLI_REGISTRY["forge"][0] == "forge"
+
+
+# --- resolve_timeout ---------------------------------------------------------
+
+def test_resolve_timeout_no_labels_returns_none():
+    assert resolve_timeout(None) is None
+    assert resolve_timeout([]) is None
+
+
+def test_resolve_timeout_no_matching_label_returns_none():
+    assert resolve_timeout(["cli:claude", "model:opus"]) is None
+
+
+def test_resolve_timeout_parses_plain_int():
+    assert resolve_timeout(["timeout:1800"]) == 1800
+
+
+def test_resolve_timeout_parses_with_s_suffix():
+    assert resolve_timeout(["timeout:1800s"]) == 1800
+    assert resolve_timeout(["timeout:60S"]) == 60
+
+
+def test_resolve_timeout_dict_label_shape_supported():
+    labels = [{"id": "x", "name": "timeout:90"}]
+    assert resolve_timeout(labels) == 90
+
+
+def test_resolve_timeout_invalid_string_returns_none(caplog):
+    with caplog.at_level("WARNING"):
+        assert resolve_timeout(["timeout:forever"]) is None
+    assert "cannot parse" in caplog.text
+
+
+def test_resolve_timeout_zero_or_negative_returns_none(caplog):
+    with caplog.at_level("WARNING"):
+        assert resolve_timeout(["timeout:0"]) is None
+        assert resolve_timeout(["timeout:-30"]) is None
+    assert "non-positive" in caplog.text
+
+
+def test_resolve_timeout_empty_value_returns_none():
+    assert resolve_timeout(["timeout:"]) is None
+    assert resolve_timeout(["timeout:s"]) is None
+
+
+def test_resolve_timeout_multiple_labels_pick_alphabetical_first(caplog):
+    with caplog.at_level("WARNING"):
+        # alphabetical: "timeout:120" before "timeout:300" (string comparison)
+        result = resolve_timeout(["timeout:300", "timeout:120"])
+    assert result == 120
+    assert "multiple timeout:* labels" in caplog.text
+
+
+def test_resolve_timeout_caller_responsible_for_clamping():
+    """resolve_timeout itself does not clamp — that's the orchestrator's job
+    (the helper there compares against TIMEOUT_HARD_CAP_SECONDS)."""
+    # Returns the parsed value verbatim even if absurdly high.
+    assert resolve_timeout(["timeout:99999"]) == 99999

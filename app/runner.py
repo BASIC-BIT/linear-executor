@@ -10,6 +10,7 @@ isolation pattern and conservative system-prompt rules.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +22,41 @@ from app.cli_registry import DEFAULT_CLI, build_argv, resolve_bin
 logger = logging.getLogger("linear-executor")
 
 
-DEFAULT_TIMEOUT_SECONDS = 600  # 10 minutes — generous for non-trivial tasks
+# Hard cap on per-ticket timeout overrides (label-driven). Anything above this
+# is clamped — runaway jobs are a pile-up risk for the worker, and tickets that
+# legitimately need >2h should be split instead. Adjust if you have a workload
+# that truly needs longer single-shot runs.
+TIMEOUT_HARD_CAP_SECONDS = 7200  # 2 hours
+
+
+def _env_int(name: str, default: int) -> int:
+    """Parse ``name`` from env as int, fall back to ``default`` on missing /
+    invalid. Logs a warning on invalid values so misconfig is visible."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        v = int(raw)
+        if v <= 0:
+            raise ValueError("must be positive")
+        return v
+    except (TypeError, ValueError) as exc:
+        logger.warning("invalid %s=%r (%s); using default %ds", name, raw, exc, default)
+        return default
+
+
+# Default timeouts per execution path. The two paths have very different
+# expected workloads — Proxy is mobile-style Q&A (transcribe / scrape /
+# summarise), Stage 1 is real coding / multi-step research. Override either
+# via env vars; per-ticket override via the ``timeout:<sec>`` Linear label.
+DEFAULT_TIMEOUT_PROXY = _env_int("LINEAR_EXECUTOR_TIMEOUT_PROXY", 300)         # 5 min
+DEFAULT_TIMEOUT_STAGE1 = _env_int("LINEAR_EXECUTOR_TIMEOUT_STAGE1", 1200)      # 20 min
+
+# Back-compat alias for callers / tests that reference the historical
+# constant. Treat it as the Stage-1 default — that was the original semantic
+# for non-trivial coding tasks. New code should pick the right path-specific
+# default explicitly.
+DEFAULT_TIMEOUT_SECONDS = DEFAULT_TIMEOUT_STAGE1
 
 
 # Back-compat: external code (and the original Phase-2 code path) referenced
@@ -37,6 +72,7 @@ class RunResult:
     stderr: str
     timed_out: bool
     cli: str = DEFAULT_CLI  # which backend produced this result
+    timeout_used: int = DEFAULT_TIMEOUT_SECONDS  # actual seconds the run was allowed
 
 
 def run_cli(
@@ -104,6 +140,7 @@ def run_cli(
             stderr=stderr or f"TIMEOUT after {timeout}s",
             timed_out=True,
             cli=cli,
+            timeout_used=timeout,
         )
 
     logger.info(
@@ -116,6 +153,7 @@ def run_cli(
         stderr=stderr or "",
         timed_out=False,
         cli=cli,
+        timeout_used=timeout,
     )
 
 

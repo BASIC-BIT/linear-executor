@@ -647,3 +647,117 @@ def test_stage1_omits_files_section_when_nothing_written(monkeypatch, patched_or
 
     body = patched_orchestrator["comments"][0]["body"]
     assert "Files attached to ticket" not in body
+
+
+# --- timeout resolution: env defaults + label override ---------------------
+
+def test_stage1_uses_stage1_default_timeout_when_no_label(monkeypatch, patched_orchestrator):
+    """No timeout:* label → run_cli called with runner.DEFAULT_TIMEOUT_STAGE1."""
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        captured["timeout"] = timeout
+        return runner_mod.RunResult(0, "ok", "", False, cli=cli, timeout_used=timeout)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    orchestrator.orchestrate_start(_payload(identifier="TES-S1-DEF"), delivery_id="d")
+    assert captured["timeout"] == runner_mod.DEFAULT_TIMEOUT_STAGE1
+
+
+def test_proxy_uses_proxy_default_timeout_when_no_label(monkeypatch, patched_orchestrator, tmp_path):
+    monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
+    monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", lambda *a, **kw: None)
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        captured["timeout"] = timeout
+        cwd.mkdir(parents=True, exist_ok=True)
+        return runner_mod.RunResult(0, "ok", "", False, cli=cli, timeout_used=timeout)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-PX-DEF", project_name="⚡ Ad-hoc AI Proxy")
+    orchestrator.orchestrate_proxy(p, delivery_id="d")
+    assert captured["timeout"] == runner_mod.DEFAULT_TIMEOUT_PROXY
+
+
+def test_stage1_label_override_beats_stage1_default(monkeypatch, patched_orchestrator):
+    """timeout:1800 label on a Stage 1 ticket → run_cli gets 1800s."""
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        captured["timeout"] = timeout
+        return runner_mod.RunResult(0, "ok", "", False, cli=cli, timeout_used=timeout)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-S1-LBL")
+    p["data"]["labels"] = [{"name": "timeout:1800"}]
+    orchestrator.orchestrate_start(p, delivery_id="d")
+    assert captured["timeout"] == 1800
+
+
+def test_proxy_label_override_beats_proxy_default(monkeypatch, patched_orchestrator, tmp_path):
+    monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
+    monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", lambda *a, **kw: None)
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        captured["timeout"] = timeout
+        cwd.mkdir(parents=True, exist_ok=True)
+        return runner_mod.RunResult(0, "ok", "", False, cli=cli, timeout_used=timeout)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-PX-LBL", project_name="⚡ Ad-hoc AI Proxy")
+    p["data"]["labels"] = [{"name": "timeout:60"}]
+    orchestrator.orchestrate_proxy(p, delivery_id="d")
+    assert captured["timeout"] == 60
+
+
+def test_label_override_clamped_to_hard_cap(monkeypatch, patched_orchestrator, caplog):
+    """timeout:99999 → clamped to TIMEOUT_HARD_CAP_SECONDS, warning logged."""
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        captured["timeout"] = timeout
+        return runner_mod.RunResult(0, "ok", "", False, cli=cli, timeout_used=timeout)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-CLAMP")
+    p["data"]["labels"] = [{"name": "timeout:99999"}]
+    with caplog.at_level("WARNING"):
+        orchestrator.orchestrate_start(p, delivery_id="d")
+    assert captured["timeout"] == runner_mod.TIMEOUT_HARD_CAP_SECONDS
+    assert "exceeds hard cap" in caplog.text
+
+
+def test_invalid_timeout_label_falls_back_to_default(monkeypatch, patched_orchestrator):
+    """timeout:forever (unparseable) → resolve_timeout returns None, default applies."""
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        captured["timeout"] = timeout
+        return runner_mod.RunResult(0, "ok", "", False, cli=cli, timeout_used=timeout)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-BAD-LBL")
+    p["data"]["labels"] = [{"name": "timeout:forever"}]
+    orchestrator.orchestrate_start(p, delivery_id="d")
+    assert captured["timeout"] == runner_mod.DEFAULT_TIMEOUT_STAGE1
+
+
+def test_timeout_message_uses_actual_value_not_module_constant(monkeypatch, patched_orchestrator):
+    """The Linear timeout-comment must show the timeout the run actually got
+    (not runner.DEFAULT_TIMEOUT_SECONDS, which would lie when a label override
+    bumped or shortened the run)."""
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+        return runner_mod.RunResult(
+            exit_code=-1, stdout="", stderr=f"TIMEOUT after {timeout}s",
+            timed_out=True, cli=cli, timeout_used=timeout,
+        )
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-MSG-TO")
+    p["data"]["labels"] = [{"name": "timeout:42"}]
+    orchestrator.orchestrate_start(p, delivery_id="d")
+    bodies = [c["body"] for c in patched_orchestrator["comments"]]
+    assert any("timed out after 42s" in b for b in bodies), bodies

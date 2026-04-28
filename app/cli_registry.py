@@ -27,6 +27,7 @@ logger = logging.getLogger("linear-executor")
 
 CLI_LABEL_PREFIX = "cli:"
 MODEL_LABEL_PREFIX = "model:"
+TIMEOUT_LABEL_PREFIX = "timeout:"
 DEFAULT_CLI = "claude"
 
 
@@ -135,6 +136,47 @@ def resolve_model(labels) -> str | None:
             model_labels, model_labels[0],
         )
     return model_labels[0][len(MODEL_LABEL_PREFIX):] or None
+
+
+def resolve_timeout(labels) -> int | None:
+    """Pick a timeout (seconds) from a ``timeout:<sec>`` Linear label, or None.
+
+    Accepts plain integer seconds (``timeout:1800``) or with a trailing ``s``
+    suffix (``timeout:1800s``) for symmetry with how humans tend to type it.
+    Invalid / non-positive values are ignored with a warning so a typo doesn't
+    silently apply zero-timeout.
+
+    Returns the parsed integer seconds, or None if no recognisable label is
+    present. The caller decides which default to apply when None is returned
+    and is also responsible for clamping against a hard cap.
+    """
+    timeout_labels = sorted(
+        n for n in _label_names(labels) if n.startswith(TIMEOUT_LABEL_PREFIX)
+    )
+    if not timeout_labels:
+        return None
+    if len(timeout_labels) > 1:
+        logger.warning(
+            "resolve_timeout — multiple timeout:* labels %r; picking %r",
+            timeout_labels, timeout_labels[0],
+        )
+    raw = timeout_labels[0][len(TIMEOUT_LABEL_PREFIX):].strip().rstrip("sS")
+    if not raw:
+        return None
+    try:
+        secs = int(raw)
+    except ValueError:
+        logger.warning(
+            "resolve_timeout — cannot parse %r as int seconds; ignoring",
+            timeout_labels[0],
+        )
+        return None
+    if secs <= 0:
+        logger.warning(
+            "resolve_timeout — non-positive timeout %r; ignoring", timeout_labels[0],
+        )
+        return None
+    return secs
 
 
 def build_argv(cli_name: str, prompt: str, *, model: str | None = None) -> list[str]:
