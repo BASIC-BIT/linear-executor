@@ -104,7 +104,7 @@ def test_webhook_enqueues_proxy_job_for_proxy_project(client):
     from app.filter import PROXY_PROJECT_ID
     payload = _payload()
     payload["data"]["state"] = {"name": "AI Implementation", "type": "started"}
-    payload["data"]["project"] = {"id": PROXY_PROJECT_ID, "name": "⚡ Ad-hoc Proxy"}
+    payload["data"]["project"] = {"id": PROXY_PROJECT_ID, "name": "⚡ Ad-hoc AI Proxy"}
     payload["updatedFrom"] = {"stateId": "previous-state-id"}
     body = json.dumps(payload).encode()
     sig = _sign(body)

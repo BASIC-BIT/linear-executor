@@ -142,7 +142,7 @@ def test_proxy_prompt_carries_progress_instructions(monkeypatch, patched_orchest
         return runner_mod.RunResult(0, "ok", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
 
-    p = _payload(identifier="TES-PXP", issue_id="iss-pxp", project_name="⚡ Ad-hoc Proxy")
+    p = _payload(identifier="TES-PXP", issue_id="iss-pxp", project_name="⚡ Ad-hoc AI Proxy")
     orchestrator.orchestrate_proxy(p, delivery_id="px-prog")
 
     prompt = captured["prompt"]
@@ -250,7 +250,7 @@ def test_proxy_appends_nonexecutor_comments_as_follow_up_context(monkeypatch, pa
         return runner_mod.RunResult(0, "ok", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
 
-    p = _payload(identifier="TES-PROXY-COMMENTS", project_name="⚡ Ad-hoc Proxy")
+    p = _payload(identifier="TES-PROXY-COMMENTS", project_name="⚡ Ad-hoc AI Proxy")
     orchestrator.orchestrate_proxy(p, delivery_id="px-comments")
 
     assert "Follow-up Instructions" in captured["prompt"]
@@ -466,7 +466,7 @@ def test_proxy_uploads_new_files_as_linear_attachments(monkeypatch, patched_orch
         return runner_mod.RunResult(0, "wrote files", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
 
-    p = _payload(identifier="TES-FILES", project_name="⚡ Ad-hoc Proxy")
+    p = _payload(identifier="TES-FILES", project_name="⚡ Ad-hoc AI Proxy")
     orchestrator.orchestrate_proxy(p, delivery_id="px-files")
 
     # Both files attached to the ticket
@@ -485,7 +485,7 @@ def test_proxy_omits_files_section_when_nothing_written(monkeypatch, patched_orc
     monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
     monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", lambda *a, **kw: "att-x")
 
-    p = _payload(identifier="TES-NOFILES", project_name="⚡ Ad-hoc Proxy")
+    p = _payload(identifier="TES-NOFILES", project_name="⚡ Ad-hoc AI Proxy")
     orchestrator.orchestrate_proxy(p, delivery_id="px-nofiles")
 
     body = patched_orchestrator["comments"][0]["body"]
@@ -506,7 +506,7 @@ def test_proxy_reports_upload_failure_in_comment(monkeypatch, patched_orchestrat
         return runner_mod.RunResult(0, "wrote out.md", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
 
-    p = _payload(identifier="TES-FAIL-UPLOAD", project_name="⚡ Ad-hoc Proxy")
+    p = _payload(identifier="TES-FAIL-UPLOAD", project_name="⚡ Ad-hoc AI Proxy")
     orchestrator.orchestrate_proxy(p, delivery_id="px-fail")
 
     body = patched_orchestrator["comments"][0]["body"]
@@ -523,7 +523,7 @@ def test_proxy_runs_in_tmp_and_sets_state_to_done(monkeypatch, patched_orchestra
         identifier="TES-PROXY-1",
         title="Was ist der Sinn des Lebens?",
         description="Eine kurze Antwort genügt.",
-        project_name="⚡ Ad-hoc Proxy",
+        project_name="⚡ Ad-hoc AI Proxy",
     )
 
     orchestrator.orchestrate_proxy(p, delivery_id="px-1")
@@ -533,7 +533,7 @@ def test_proxy_runs_in_tmp_and_sets_state_to_done(monkeypatch, patched_orchestra
     # Comment posted
     assert len(patched_orchestrator["comments"]) == 1
     body = patched_orchestrator["comments"][0]["body"]
-    assert "Ad-hoc Proxy" in body
+    assert "Ad-hoc AI Proxy" in body
     assert "(mocked claude output)" in body
     # State moved straight to Done
     assert patched_orchestrator["state_changes"] == [
@@ -555,7 +555,7 @@ def test_proxy_includes_attachments_in_prompt(monkeypatch, patched_orchestrator,
         return runner_mod.RunResult(0, "analyzed", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
 
-    p = _payload(identifier="TES-PROXY-2", title="Analysiere data.csv", project_name="⚡ Ad-hoc Proxy")
+    p = _payload(identifier="TES-PROXY-2", title="Analysiere data.csv", project_name="⚡ Ad-hoc AI Proxy")
     orchestrator.orchestrate_proxy(p, delivery_id="px-2")
 
     # Attachments dir mentioned in prompt so Claude can find them
@@ -569,7 +569,7 @@ def test_proxy_posts_error_and_reraises(monkeypatch, patched_orchestrator, tmp_p
         raise RuntimeError("subprocess died")
     monkeypatch.setattr("app.orchestrator.runner.run_cli", boom)
 
-    p = _payload(identifier="TES-PROXY-3", project_name="⚡ Ad-hoc Proxy")
+    p = _payload(identifier="TES-PROXY-3", project_name="⚡ Ad-hoc AI Proxy")
     with pytest.raises(RuntimeError, match="subprocess died"):
         orchestrator.orchestrate_proxy(p, delivery_id="px-3")
 

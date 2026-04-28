@@ -26,6 +26,7 @@ response is already on its way back to Linear.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import traceback
 from pathlib import Path
@@ -47,12 +48,16 @@ HEADER_RUN = "🤖 **Linear-Executor** — Coding Agent Run"
 HEADER_REVIEW = "✅ **Linear-Executor** — Marked Done"
 HEADER_MERGE = "🔀 **Linear-Executor** — Merged"
 HEADER_CONFLICT = "⚠ **Linear-Executor** — Merge Conflict"
-HEADER_PROXY = "⚡ **Linear-Executor** — Ad-hoc Proxy"
+HEADER_PROXY = "⚡ **Linear-Executor** — Ad-hoc AI Proxy"
 HEADER_CANCELLED = "⏸ **Linear-Executor** — Run Cancelled"
 
 MAX_OUTPUT_CHARS = 25_000
 
-TEAM_ID = "0f5513d0-3343-4d69-ad20-fc51da44fb90"  # Test_Dev_123
+# Linear team UUID. Required for state-id lookups (Backlog / Todo / AI
+# Implementation / In Review / Done). Set LINEAR_TEAM_ID in .env to your
+# team's UUID — find it at Linear Settings → Teams → <your team> in the URL,
+# or via the GraphQL API.
+TEAM_ID = os.environ.get("LINEAR_TEAM_ID", "").strip()
 TICKETS_BASE = Path.home() / "cc-dev" / "tickets"
 # Persistent — survives /tmp cleanup so follow-up tickets can still reach
 # files written by an earlier proxy run. (TES-606)

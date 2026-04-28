@@ -103,6 +103,7 @@ Files generated during the run get auto-attached to the Linear ticket via Linear
 - Runs the agent in `proxy-outputs/<ticket>/` for a clean workspace
 - Posts the result back as a comment
 - Great for "look up X for me" or "draft me a teaser image" kind of asks
+- Opt-in: create a Linear project (any name) and set its UUID in `.env` as `LINEAR_PROXY_PROJECT_ID`. Tickets in that project skip Stage 1/2 and run via the proxy flow.
 
 ### Trigger from anywhere
 - **From your chatbot** via Linear MCP (the original use case)
@@ -162,7 +163,7 @@ cd linear-executor
 uv venv
 uv pip install -e ".[dev]"
 cp .env.example .env
-#  → set LINEAR_WEBHOOK_SECRET, LINEAR_API_KEY
+#  → set LINEAR_WEBHOOK_SECRET, LINEAR_API_KEY, LINEAR_TEAM_ID
 uv run pytest -v
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8123
 ```
@@ -177,6 +178,24 @@ Expose port 8123 over HTTPS (Caddy / Cloudflare Tunnel / ngrok), then in Linear:
 Restart uvicorn. Make a ticket, flip to **AI Implementation** (or your trigger state), watch the lifecycle comment appear.
 
 To use a non-Claude backend: install the CLI on the same machine (`opencode`, `codex`, `gemini`, `forge`), make sure it's authenticated, then add `cli:<name>` as a Linear label on the ticket. Per-CLI auth and gotcha notes: `docs/backends.md` (TODO — currently only Claude Code + opencode are smoke-tested end-to-end).
+
+### Optional: enable ad-hoc proxy mode
+
+If you want a project where tickets get a quick Q&A-style answer (no worktree, no merge, status straight to Done), pick or create a Linear project for it, copy its UUID, and set in `.env`:
+
+```bash
+LINEAR_PROXY_PROJECT_ID=<your-project-uuid>
+```
+
+Restart uvicorn. Tickets in that project will now use the lightweight proxy flow; tickets in any other project keep the default Stage 1 / Stage 2 build-with-merge flow. Leaving the variable unset disables proxy mode entirely.
+
+To find the UUID, open the project in Linear and run:
+
+```bash
+curl -sS https://api.linear.app/graphql -H "Authorization: $LINEAR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{projects(first:50){nodes{id name}}}"}' | jq '.data.projects.nodes[]'
+```
 
 ## Configuration via Linear labels
 

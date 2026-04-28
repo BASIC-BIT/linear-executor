@@ -7,23 +7,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 
-from app import job_registry
-from app import linear_api
-from app import queue as q
-from app.filter import (
-    is_proxy_ticket,
-    should_cancel_run,
-    should_complete_review,
-    should_start_batch_run,
-    should_start_execution,
-)
-from app.signature import verify_signature
-from app.worker import Worker
-
-
-# Load env in two layers so subprocess CLIs (claude/opencode/codex/gemini) and
-# their MCP servers see all of Bastian's provider keys + service tokens, not
-# just the executor's own LINEAR_* secrets.
+# Load env in two layers BEFORE importing any `app.*` module so module-level
+# os.environ reads (e.g. PROXY_PROJECT_ID in app.filter, TEAM_ID in
+# app.orchestrator) see the .env values. Subprocess CLIs (claude/opencode/
+# codex/gemini) inherit the same env so their MCP servers see all provider
+# keys + service tokens.
 #  1. shared dev-workspace env (~/cc-dev/.env): all AI provider + MCP keys
 #  2. executor-local .env: LINEAR_WEBHOOK_SECRET / LINEAR_API_KEY (overrides)
 SHARED_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
@@ -31,6 +19,19 @@ ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 if SHARED_ENV_PATH.exists():
     load_dotenv(dotenv_path=SHARED_ENV_PATH, override=False)
 load_dotenv(dotenv_path=ENV_PATH, override=True)
+
+from app import job_registry  # noqa: E402
+from app import linear_api  # noqa: E402
+from app import queue as q  # noqa: E402
+from app.filter import (  # noqa: E402
+    is_proxy_ticket,
+    should_cancel_run,
+    should_complete_review,
+    should_start_batch_run,
+    should_start_execution,
+)
+from app.signature import verify_signature  # noqa: E402
+from app.worker import Worker  # noqa: E402
 
 
 def _db_path() -> Path:

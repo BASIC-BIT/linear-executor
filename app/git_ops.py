@@ -10,12 +10,18 @@ rollback, etc.).
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 
 logger = logging.getLogger("linear-executor")
+
+# Git author identity for executor commits. Override via LINEAR_EXECUTOR_GIT_EMAIL
+# and LINEAR_EXECUTOR_GIT_NAME in .env so commits attribute to your own setup.
+GIT_AUTHOR_EMAIL = os.environ.get("LINEAR_EXECUTOR_GIT_EMAIL", "executor@example.com").strip()
+GIT_AUTHOR_NAME = os.environ.get("LINEAR_EXECUTOR_GIT_NAME", "Linear-Executor").strip()
 
 
 @dataclass(frozen=True)
@@ -78,8 +84,8 @@ def commit_all(worktree_path: Path, message: str) -> GitResult:
     if not status.stdout.strip():
         return GitResult(True, "(nothing to commit)", "")
     return _run(
-        ["git", "-c", "user.email=executor@ai-devhub-247.site",
-         "-c", "user.name=Linear-Executor",
+        ["git", "-c", f"user.email={GIT_AUTHOR_EMAIL}",
+         "-c", f"user.name={GIT_AUTHOR_NAME}",
          "commit", "-m", message],
         cwd=worktree_path,
     )

@@ -7,9 +7,26 @@ they explicitly opt in. Every test gets a fresh SQLite queue file under
 ``tmp_path`` so webhook-level tests never see state from a previous run.
 Tests that need different behavior can override via monkeypatch.
 """
-import pytest
+import os
 
-from app import git_ops, runner
+# Pin fixed UUIDs / values for tests BEFORE any `app.*` module is imported,
+# so module-level os.environ reads (PROXY_PROJECT_ID in app.filter, TEAM_ID
+# in app.orchestrator, GIT_AUTHOR_* in app.git_ops) have deterministic values
+# regardless of the dev-machine .env.
+os.environ.setdefault(
+    "LINEAR_PROXY_PROJECT_ID",
+    "00000000-0000-0000-0000-000000000001",
+)
+os.environ.setdefault(
+    "LINEAR_TEAM_ID",
+    "00000000-0000-0000-0000-0000000000aa",
+)
+os.environ.setdefault("LINEAR_EXECUTOR_GIT_EMAIL", "executor@test.local")
+os.environ.setdefault("LINEAR_EXECUTOR_GIT_NAME", "Linear-Executor-Test")
+
+import pytest  # noqa: E402
+
+from app import git_ops, runner  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

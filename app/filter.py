@@ -12,6 +12,7 @@ Anything else is ignored (we still respond 200 so Linear doesn't retry).
 from __future__ import annotations
 
 import logging
+import os
 
 logger = logging.getLogger("linear-executor")
 
@@ -24,7 +25,9 @@ BATCH_STATE_NAME = "AI Batch"
 
 # Tickets in this Linear project run via the lightweight proxy flow
 # (Phase 4): no folder mapping, no git worktree, status straight to Done.
-PROXY_PROJECT_ID = "02bda033-9e62-4ee4-a90a-fdc9c0858032"
+# Set LINEAR_PROXY_PROJECT_ID in .env to your own Linear project UUID.
+# Empty / unset → proxy flow is disabled (Stage 1 build-with-merge runs on every trigger).
+PROXY_PROJECT_ID = os.environ.get("LINEAR_PROXY_PROJECT_ID", "").strip()
 
 # Backwards-compatible alias used by older imports / tests.
 TRIGGER_STATE_NAME = START_STATE_NAME
@@ -103,7 +106,7 @@ def should_complete_review(payload: dict) -> bool:
 
 
 def is_proxy_ticket(payload: dict) -> bool:
-    """True if the ticket lives in the ⚡ Ad-hoc Proxy project.
+    """True if the ticket lives in the ⚡ Ad-hoc AI Proxy project.
 
     Linear's webhook payload does NOT include the project field by default
     (verified 2026-04-25 via debug-log of TES-619). The data dict contains
@@ -111,6 +114,9 @@ def is_proxy_ticket(payload: dict) -> bool:
     tickets we fall back to a GraphQL lookup when the payload is empty.
     See TES-617 for the full diagnosis.
     """
+    if not PROXY_PROJECT_ID:
+        return False
+
     data = payload.get("data") or {}
     project = data.get("project") or {}
     project_id = project.get("id")

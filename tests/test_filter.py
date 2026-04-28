@@ -88,7 +88,7 @@ def _proxy_payload(state="AI Implementation", project_id=PROXY_PROJECT_ID, with_
         "data": {
             "identifier": "TES-PROXY",
             "state": {"name": state, "type": "started"},
-            "project": {"id": project_id, "name": "⚡ Ad-hoc Proxy"},
+            "project": {"id": project_id, "name": "⚡ Ad-hoc AI Proxy"},
         },
     }
     if with_state_transition:
