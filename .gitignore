@@ -44,8 +44,9 @@ proxy-outputs/
 # Worktrees
 .worktrees/
 
-# Claude Code project-local runtime state
+# Claude Code project-local runtime state + local agent-context notes
 .claude/
+CLAUDE.md
 
 # Local config drafts (may contain secrets)
 *.draft
