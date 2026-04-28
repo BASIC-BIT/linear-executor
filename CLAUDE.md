@@ -1,24 +1,37 @@
 # linear-executor
 
-FastAPI-Bridge zwischen Linear und Claude Code. Linear-Ticket wechselt auf Status "Do It" → Webhook → Endpoint startet `claude --print` im passenden Folder → Ergebnis zurück als Linear-Kommentar.
+FastAPI-Bridge zwischen Linear und beliebigen AI-Coding-Agents. Linear-Ticket wechselt auf Status **"AI Implementation"** → Webhook → Executor pickt den CLI per Linear-Label `cli:<name>` (claude/opencode/codex/gemini/forge), startet ihn headless im passenden Folder (Worktree) → Ergebnis zurück als Linear-Kommentar.
 
-## Linear-Tickets
+Status-Konstanten (siehe `app/filter.py`):
+- Trigger: `AI Implementation`
+- Review: `In Review`
+- Cancel: `Stop AI` (sendet SIGTERM an den Subprocess)
+- Batch: `AI Batch`
+- Complete: `Done`
+
+CLI-Auswahl per Label `cli:<name>`, Default `claude` wenn kein Label gesetzt (`app/cli_registry.py`).
+
+## Linear-Tickets (Frühphase + Meilensteine)
 
 - **TES-466** (POC, Urgent) — Webhook empfangen + loggen
-- **TES-458** — Executor-Architektur (Filter "Do It", async Job, Kommentar zurück)
-- **TES-464** — Status "Do It" als Trigger + MCP-Tool `set_linear_status`
+- **TES-458** — Executor-Architektur (Filter, async Job, Kommentar zurück)
+- **TES-464** — MCP-Tool `set_linear_status` als Trigger aus dem Chat
 - **TES-465** — Ad-hoc Proxy (`type: proxy` Tickets für Mobile)
 - **TES-457** — Vision (Linear als AI-Steuerungssystem)
+- **TES-646** — CLI-agnostisch via `cli:<name>` Labels (multi-engine support)
+
+Aktuelle Tickets im Code/README referenziert: TES-596, TES-606, TES-608, TES-615, TES-617, TES-619, TES-700, TES-702 — siehe README + Codebase.
 
 ## Phasen
 
 | Phase | Umfang | Ticket |
 |-------|--------|--------|
 | 1 | POC: Webhook empfangen, HMAC-Signatur prüfen, Payload loggen | TES-466 |
-| 2 | Executor: Filter "Do It", `cc_folder` extrahieren, `claude --print` async starten, Kommentar + Status zurück | TES-458 |
+| 2 | Executor: Filter `AI Implementation`, `cc_folder` extrahieren, CLI async starten, Kommentar + Status zurück | TES-458 |
 | 3 | MCP-Tool `set_linear_status` → Trigger aus Claude-Chat | TES-464 |
 | 4 | Ad-hoc-Proxy: `type: proxy` Tickets, generic Folder, Mobile-Flow | TES-465 |
 | 5 | Cron-Feature (später, evtl. via `claudeclaw:jobs` statt eigenes System) | TES-458 (Teil) |
+| 9 | CLI-agnostisch (claude/opencode/codex/gemini/forge per Label) | TES-646 |
 
 ## Deployment
 
@@ -39,6 +52,26 @@ Alles andere (Auth für `/ask`, Rate-Limits, Subprocess-Governance, Cron-Rechte)
 2. Executor unter welchem User auf App-Server? (neuer System-User, z.B. `linear-exec`)
 3. Cron: eigenes System in Phase 5 oder via `claudeclaw:jobs` / `schedule` Skill integrieren?
 
-## Struktur (wird aufgebaut bei Implementierung)
+## Struktur
 
-Noch kein Code — erst wenn TES-466 in Progress geht.
+Code ist implementiert und läuft auf dem Dev-Server (`executor.ai-devhub-247.site`). Repo öffentlich auf `miraculix95/linear-executor`. Aktueller Stand:
+
+```
+app/
+  main.py                         FastAPI app + Webhook-Entrypoint
+  signature.py                    HMAC-Verifikation
+  filter.py                       Status-Konstanten + Trigger-Matching
+  cli_registry.py                 cli:<name> + model:<id> Label-Resolver
+  runner.py                       Subprocess-Spawn + Timeout
+  orchestrator.py                 Lifecycle: claim → run → kommentieren
+  worker.py                       Polling-Worker
+  queue.py                        SQLite-Queue mit status_comment_id
+  cancel.py                       "Stop AI" → SIGTERM
+  linear_api.py                   Linear-REST + GraphQL-Helpers
+  folders.py                      cc_folder Mapping pro Ticket
+  git_ops.py                      Worktree-Handling
+  attachments.py                  File-Uploads an Linear-Tickets
+  job_registry.py                 Job-Tracking
+```
+
+Komplette README mit Architektur-Bild, Configuration, Quick-Start: `README.md`.
