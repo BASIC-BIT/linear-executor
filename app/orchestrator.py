@@ -32,6 +32,7 @@ import traceback
 from pathlib import Path
 
 from app import attachments as attachments_mod
+from app import folders
 from app import git_ops
 from app import job_registry
 from app import linear_api
@@ -58,10 +59,19 @@ MAX_OUTPUT_CHARS = 25_000
 # team's UUID — find it at Linear Settings → Teams → <your team> in the URL,
 # or via the GraphQL API.
 TEAM_ID = os.environ.get("LINEAR_TEAM_ID", "").strip()
-TICKETS_BASE = Path.home() / "cc-dev" / "tickets"
-# Persistent — survives /tmp cleanup so follow-up tickets can still reach
-# files written by an earlier proxy run. (TES-606)
-PROXY_BASE = Path.home() / "cc-dev" / "linear-executor" / "proxy-outputs"
+# Per-ticket folder base — same source-of-truth as folders.FALLBACK_BASE so
+# a `folder:` override in description and the fallback path agree on layout.
+TICKETS_BASE = Path(folders.FALLBACK_BASE).expanduser()
+# Proxy-mode work dirs live next to the installed package by default so
+# they're persistent (survives /tmp cleanup) but not tied to any particular
+# user's home layout. Override via LINEAR_EXECUTOR_PROXY_BASE in .env if you
+# want a different location. (TES-606)
+PROXY_BASE = Path(
+    os.environ.get(
+        "LINEAR_EXECUTOR_PROXY_BASE",
+        str(Path(__file__).resolve().parent.parent / "proxy-outputs"),
+    )
+).expanduser()
 
 _state_id_cache: dict[str, str] = {}
 
@@ -278,11 +288,10 @@ def _ticket_dir(identifier: str) -> Path:
 
 def _db_path() -> Path:
     """Resolve the queue DB path the same way main.py does."""
-    import os
     explicit = os.getenv("LINEAR_EXECUTOR_DB")
     if explicit:
         return Path(explicit)
-    return Path.home() / "cc-dev" / "linear-executor" / "state" / "jobs.db"
+    return Path(__file__).resolve().parent.parent / "state" / "jobs.db"
 
 
 def _was_cancelled_during_run(issue_id: str | None, run_result) -> bool:
@@ -308,7 +317,7 @@ def _was_cancelled_during_run(issue_id: str | None, run_result) -> bool:
 
 
 def _cleanup_empty_ticket_dir(identifier: str) -> None:
-    """Remove ~/cc-dev/tickets/<id>/ if it contains no actual files (recursively).
+    """Remove TICKETS_BASE/<id>/ if it contains no actual files (recursively).
 
     Conservative: empty sub-dirs are fine, but a single file anywhere makes us
     leave the whole tree alone — Bastian or Claude may have put work there.

@@ -2,34 +2,44 @@
 
 Priority order:
 1. Explicit override in the ticket description: ``folder: <path>``
-2. Linear-project-to-folder mapping (kept in sync with ~/.claude/rules/linear-projects.md)
-3. Fallback: ``~/cc-dev/tickets/<identifier>/`` — a fresh folder per ticket.
+2. Linear-project-to-folder mapping (PROJECT_FOLDERS, empty by default — see
+   below)
+3. Fallback: ``<LINEAR_EXECUTOR_TICKETS_BASE>/<identifier>/`` — a fresh folder
+   per ticket. Default base is ``~/.linear-executor/tickets/``; override via
+   the ``LINEAR_EXECUTOR_TICKETS_BASE`` env var.
 
 Returns both the resolved path (expanded to an absolute path) and the strategy
 that produced it, so the webhook handler can log / comment why this folder was
 chosen.
+
+PROJECT_FOLDERS is empty by default — every ticket gets its own folder under
+the fallback base. To pre-map specific Linear projects to existing repos on
+disk (so a ticket in project "ACME-Backend" runs in ``~/code/acme-backend/``),
+edit this dict in your fork or set entries at runtime. The ``folder:`` override
+in the ticket description always takes precedence.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 
-# Synced manually from ~/.claude/rules/linear-projects.md (2026-04-18).
-# Update both when a new Linear project appears.
-PROJECT_FOLDERS: dict[str, str] = {
-    "Infra & AI Harnessing": "~/cc-dev/",
-    "Linear-Executor": "~/cc-dev/linear-executor/",
-    "Data Dashboard": "~/cc-dev/data-dashboard/",
-    "HypeType": "~/cc-dev/archetype-assessment/",
-    "The Etruscan Project": "~/cc-dev/the_etruscan_project/",
-    "Radio MCP": "~/cc-dev/radio-mcp/",
-    "ClaudeClaw": "~/cc-claudeclaw/",
-}
+# Map Linear project names to local folders. Empty by default — populate in
+# your fork / deployment if you want auto-routing of project-X tickets to
+# repo-Y. The ``folder: <path>`` override in a ticket description always wins.
+PROJECT_FOLDERS: dict[str, str] = {}
 
 
-FALLBACK_BASE = "~/cc-dev/tickets/"
+# Base directory for per-ticket folders when no override and no mapping match.
+# Override via LINEAR_EXECUTOR_TICKETS_BASE in .env. Trailing slash is added if
+# missing so ``f"{FALLBACK_BASE}{identifier}/"`` always produces a clean path.
+_FALLBACK_BASE_RAW = os.environ.get(
+    "LINEAR_EXECUTOR_TICKETS_BASE",
+    "~/.linear-executor/tickets/",
+).strip()
+FALLBACK_BASE = _FALLBACK_BASE_RAW if _FALLBACK_BASE_RAW.endswith("/") else _FALLBACK_BASE_RAW + "/"
 
 
 _OVERRIDE_RE = re.compile(r"^\s*folder\s*:\s*(?P<path>\S+)\s*$", re.MULTILINE)

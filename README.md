@@ -197,6 +197,16 @@ curl -sS https://api.linear.app/graphql -H "Authorization: $LINEAR_API_KEY" \
   -d '{"query":"{projects(first:50){nodes{id name}}}"}' | jq '.data.projects.nodes[]'
 ```
 
+### Where work happens — folder resolution
+
+For each ticket the executor picks a working directory in this priority order:
+
+1. **`folder: <path>` in the ticket description** — explicit override, always wins. Useful for one-off tickets that need to run inside a specific repo.
+2. **Linear-project-name → folder mapping** — defined in `app/folders.py` as `PROJECT_FOLDERS`. Empty by default. Fork the file and add entries like `"ACME-Backend": "~/code/acme-backend/"` if you want every ticket in a given Linear project to land in the same repo automatically.
+3. **Per-ticket fallback folder** — `<LINEAR_EXECUTOR_TICKETS_BASE>/<TES-XXX>/`, default base `~/.linear-executor/tickets/`. Override the base via `LINEAR_EXECUTOR_TICKETS_BASE` in `.env`.
+
+Most installs only need (1) and (3): the `folder:` description override for ad-hoc work, the fallback for everything else. Pre-mapping projects (option 2) is a power-user shortcut.
+
 ## Configuration via Linear labels
 
 | Label | What it does |
