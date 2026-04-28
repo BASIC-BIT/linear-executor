@@ -49,3 +49,6 @@ proxy-outputs/
 
 # Local config drafts (may contain secrets)
 *.draft
+
+# Local research artefacts (third-party transcripts) — keep local, do not publish
+originals/youtube-*.md
