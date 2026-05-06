@@ -145,9 +145,16 @@ def run_cli(
         cli, cmd[0], cwd, timeout, auth_mode, filtered_note,
     )
 
+    # stdin=DEVNULL: every supported CLI takes the prompt as argv (--print /
+    # exec / -p / run + prompt). None expects input on stdin. But some CLIs
+    # have an interactive readline fallback that blocks indefinitely on a
+    # pipe-stdin without a TTY (gemini-cli auth path: see google-gemini/
+    # gemini-cli#20854). Closing stdin sends immediate EOF so any such
+    # fallback returns instantly instead of hanging the subprocess forever.
     proc = subprocess.Popen(
         cmd,
         cwd=str(cwd),
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
