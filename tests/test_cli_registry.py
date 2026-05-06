@@ -58,8 +58,11 @@ def test_build_argv_appends_prompt_for_each_cli():
         assert argv[-1] == "hello world"
         # bin path may be expanded — check basename matches the registry's first token.
         assert argv[0].split("/")[-1] == CLI_REGISTRY[name][0]
-        # static prefix preserved
-        assert argv[1:-1] == CLI_REGISTRY[name][1:]
+        # Static prefix from the registry must appear in order in argv.
+        # (build_argv may inject `--model X` from AUTH_REGISTRY defaults
+        # in addition to the registry prefix — so argv is a superset.)
+        prefix = CLI_REGISTRY[name][1:]
+        assert argv[1:1 + len(prefix)] == prefix
 
 
 def test_build_argv_unknown_cli_raises():
@@ -129,3 +132,79 @@ def test_resolve_timeout_caller_responsible_for_clamping():
     (the helper there compares against TIMEOUT_HARD_CAP_SECONDS)."""
     # Returns the parsed value verbatim even if absurdly high.
     assert resolve_timeout(["timeout:99999"]) == 99999
+
+
+# ---------------------------------------------------------------------------
+# Auth resolution (TES-716 follow-up — multi-CLI auth)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_auth_default_is_oauth_for_known_clis(monkeypatch):
+    from app.cli_registry import resolve_auth
+    # No labels, no env override → AuthSpec.default_mode == "oauth"
+    for cli in ("claude", "codex", "gemini", "opencode", "forge"):
+        monkeypatch.delenv(f"LINEAR_EXECUTOR_{cli.upper()}_AUTH", raising=False)
+        assert resolve_auth([], cli) == "oauth"
+
+
+def test_resolve_auth_label_apikey_overrides_default():
+    from app.cli_registry import resolve_auth
+    assert resolve_auth(["auth:apikey"], "claude") == "apikey"
+    assert resolve_auth([{"name": "auth:apikey"}], "opencode") == "apikey"
+
+
+def test_resolve_auth_label_oauth_explicit():
+    from app.cli_registry import resolve_auth
+    assert resolve_auth(["auth:oauth"], "claude") == "oauth"
+
+
+def test_resolve_auth_unknown_label_falls_through(monkeypatch):
+    from app.cli_registry import resolve_auth
+    monkeypatch.setenv("LINEAR_EXECUTOR_CLAUDE_AUTH", "apikey")
+    # Garbage label → ignored, env wins
+    assert resolve_auth(["auth:dwim"], "claude") == "apikey"
+
+
+def test_resolve_auth_env_override_per_cli(monkeypatch):
+    from app.cli_registry import resolve_auth
+    monkeypatch.setenv("LINEAR_EXECUTOR_OPENCODE_AUTH", "apikey")
+    monkeypatch.delenv("LINEAR_EXECUTOR_CLAUDE_AUTH", raising=False)
+    assert resolve_auth([], "opencode") == "apikey"
+    assert resolve_auth([], "claude") == "oauth"  # other CLI unaffected
+
+
+def test_resolve_auth_label_beats_env(monkeypatch):
+    from app.cli_registry import resolve_auth
+    monkeypatch.setenv("LINEAR_EXECUTOR_CLAUDE_AUTH", "apikey")
+    assert resolve_auth(["auth:oauth"], "claude") == "oauth"
+
+
+def test_resolve_auth_invalid_env_falls_through(monkeypatch):
+    from app.cli_registry import resolve_auth
+    monkeypatch.setenv("LINEAR_EXECUTOR_CLAUDE_AUTH", "garbage")
+    assert resolve_auth([], "claude") == "oauth"  # falls through to spec default
+
+
+def test_build_argv_opencode_oauth_picks_go_plan_model():
+    argv = build_argv("opencode", "hi", auth_mode="oauth")
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "opencode-go/minimax-m2.5"
+
+
+def test_build_argv_opencode_apikey_picks_provider_model():
+    argv = build_argv("opencode", "hi", auth_mode="apikey")
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "openrouter/anthropic/claude-haiku-4.5"
+
+
+def test_build_argv_explicit_model_wins_over_auth_default():
+    argv = build_argv("opencode", "hi", model="custom/model", auth_mode="oauth")
+    assert argv[argv.index("--model") + 1] == "custom/model"
+
+
+def test_build_argv_claude_no_auto_model_either_mode():
+    # Claude has no default model in its AuthSpec — Max-Plan picks tier itself.
+    argv_oauth = build_argv("claude", "hi", auth_mode="oauth")
+    argv_apikey = build_argv("claude", "hi", auth_mode="apikey")
+    assert "--model" not in argv_oauth
+    assert "--model" not in argv_apikey

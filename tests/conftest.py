@@ -37,7 +37,7 @@ def _isolated_queue_db(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse=True)
 def _no_real_cli(monkeypatch):
-    def fake_run_cli(cli, prompt, cwd, *, timeout=runner.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run_cli(cli, prompt, cwd, *, timeout=runner.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         cwd.mkdir(parents=True, exist_ok=True)
         return runner.RunResult(
             exit_code=0,

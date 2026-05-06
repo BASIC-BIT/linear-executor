@@ -117,7 +117,7 @@ def test_stage1_prompt_carries_progress_instructions_with_issue_id(monkeypatch, 
     """Claude needs to know it should post 🔄 progress lines and which Linear issue to post against. (TES-608)"""
     captured = {}
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         captured["prompt"] = prompt
         return runner_mod.RunResult(0, "ok", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -136,7 +136,7 @@ def test_proxy_prompt_carries_progress_instructions(monkeypatch, patched_orchest
     monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", lambda *a, **kw: "att-x")
     captured = {}
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         captured["prompt"] = prompt
         cwd.mkdir(parents=True, exist_ok=True)
         return runner_mod.RunResult(0, "ok", "", False)
@@ -161,7 +161,7 @@ def test_progress_comments_excluded_from_followup_context(monkeypatch, patched_o
     ]
     captured = {}
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         captured["prompt"] = prompt
         return runner_mod.RunResult(0, "ok", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -202,7 +202,7 @@ def test_stage1_appends_nonexecutor_comments_as_follow_up_context(monkeypatch, p
     ]
     captured = {}
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         captured["prompt"] = prompt
         return runner_mod.RunResult(0, "ok", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -222,7 +222,7 @@ def test_stage1_without_follow_up_comments_omits_section(monkeypatch, patched_or
     patched_orchestrator["_comments_to_return"] = []
     captured = {}
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         captured["prompt"] = prompt
         return runner_mod.RunResult(0, "ok", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -245,7 +245,7 @@ def test_proxy_appends_nonexecutor_comments_as_follow_up_context(monkeypatch, pa
     ]
     captured = {}
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         captured["prompt"] = prompt
         return runner_mod.RunResult(0, "ok", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -315,7 +315,7 @@ def test_stage1_includes_diff_in_comment_when_claude_changes_files(monkeypatch, 
 
     # Mock claude to write a file in the worktree before returning
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         (cwd / "claude_made_this.txt").write_text("hello from claude\n")
         return runner_mod.RunResult(0, "wrote claude_made_this.txt", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -335,7 +335,7 @@ def test_stage2_merges_worktree_into_main_and_cleans_up(monkeypatch, patched_orc
     monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
 
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         (cwd / "feature.txt").write_text("feature content\n")
         return runner_mod.RunResult(0, "added feature", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -366,7 +366,7 @@ def test_stage2_handles_merge_conflict_and_rolls_back_status(monkeypatch, patche
 
     # Stage 1 — branch edits README
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         (cwd / "README.md").write_text("from branch\n")
         return runner_mod.RunResult(0, "edited readme", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -394,7 +394,7 @@ def test_stage2_removes_empty_ticket_dir_after_merge(monkeypatch, patched_orches
     monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
 
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         (cwd / "x.txt").write_text("x\n")
         return runner_mod.RunResult(0, "ok", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -415,7 +415,7 @@ def test_stage2_keeps_ticket_dir_if_files_remain(monkeypatch, patched_orchestrat
     monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
 
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         (cwd / "y.txt").write_text("y\n")
         return runner_mod.RunResult(0, "ok", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -459,7 +459,7 @@ def test_proxy_uploads_new_files_as_linear_attachments(monkeypatch, patched_orch
     monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", fake_attach)
 
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         cwd.mkdir(parents=True, exist_ok=True)
         (cwd / "report.md").write_text("# notes\n")
         (cwd / "data.json").write_text('{"x": 1}\n')
@@ -500,7 +500,7 @@ def test_proxy_reports_upload_failure_in_comment(monkeypatch, patched_orchestrat
     monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", boom_attach)
 
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         cwd.mkdir(parents=True, exist_ok=True)
         (cwd / "out.md").write_text("hi\n")
         return runner_mod.RunResult(0, "wrote out.md", "", False)
@@ -549,7 +549,7 @@ def test_proxy_includes_attachments_in_prompt(monkeypatch, patched_orchestrator,
 
     captured_prompt = {"value": ""}
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         captured_prompt["value"] = prompt
         cwd.mkdir(parents=True, exist_ok=True)
         return runner_mod.RunResult(0, "analyzed", "", False)
@@ -565,7 +565,7 @@ def test_proxy_includes_attachments_in_prompt(monkeypatch, patched_orchestrator,
 def test_proxy_posts_error_and_reraises(monkeypatch, patched_orchestrator, tmp_path):
     monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
     from app import runner as runner_mod
-    def boom(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def boom(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         raise RuntimeError("subprocess died")
     monkeypatch.setattr("app.orchestrator.runner.run_cli", boom)
 
@@ -583,7 +583,7 @@ def test_stage2_aborts_when_main_repo_is_dirty(monkeypatch, patched_orchestrator
     monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
 
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         (cwd / "x.txt").write_text("x\n")
         return runner_mod.RunResult(0, "ok", "", False)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -617,7 +617,7 @@ def test_stage1_uploads_new_files_as_linear_attachments(monkeypatch, patched_orc
     monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", fake_attach)
 
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         cwd.mkdir(parents=True, exist_ok=True)
         (cwd / "report.md").write_text("# generated\n")
         (cwd / "data.csv").write_text("a,b,c\n1,2,3\n")
@@ -655,7 +655,7 @@ def test_stage1_uses_stage1_default_timeout_when_no_label(monkeypatch, patched_o
     """No timeout:* label → run_cli called with runner.DEFAULT_TIMEOUT_STAGE1."""
     captured = {}
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         captured["timeout"] = timeout
         return runner_mod.RunResult(0, "ok", "", False, cli=cli, timeout_used=timeout)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -669,7 +669,7 @@ def test_proxy_uses_proxy_default_timeout_when_no_label(monkeypatch, patched_orc
     monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", lambda *a, **kw: None)
     captured = {}
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         captured["timeout"] = timeout
         cwd.mkdir(parents=True, exist_ok=True)
         return runner_mod.RunResult(0, "ok", "", False, cli=cli, timeout_used=timeout)
@@ -684,7 +684,7 @@ def test_stage1_label_override_beats_stage1_default(monkeypatch, patched_orchest
     """timeout:1800 label on a Stage 1 ticket → run_cli gets 1800s."""
     captured = {}
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         captured["timeout"] = timeout
         return runner_mod.RunResult(0, "ok", "", False, cli=cli, timeout_used=timeout)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -700,7 +700,7 @@ def test_proxy_label_override_beats_proxy_default(monkeypatch, patched_orchestra
     monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", lambda *a, **kw: None)
     captured = {}
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         captured["timeout"] = timeout
         cwd.mkdir(parents=True, exist_ok=True)
         return runner_mod.RunResult(0, "ok", "", False, cli=cli, timeout_used=timeout)
@@ -716,7 +716,7 @@ def test_label_override_clamped_to_hard_cap(monkeypatch, patched_orchestrator, c
     """timeout:99999 → clamped to TIMEOUT_HARD_CAP_SECONDS, warning logged."""
     captured = {}
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         captured["timeout"] = timeout
         return runner_mod.RunResult(0, "ok", "", False, cli=cli, timeout_used=timeout)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -733,7 +733,7 @@ def test_invalid_timeout_label_falls_back_to_default(monkeypatch, patched_orches
     """timeout:forever (unparseable) → resolve_timeout returns None, default applies."""
     captured = {}
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         captured["timeout"] = timeout
         return runner_mod.RunResult(0, "ok", "", False, cli=cli, timeout_used=timeout)
     monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
@@ -749,7 +749,7 @@ def test_timeout_message_uses_actual_value_not_module_constant(monkeypatch, patc
     (not runner.DEFAULT_TIMEOUT_SECONDS, which would lie when a label override
     bumped or shortened the run)."""
     from app import runner as runner_mod
-    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None):
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
         return runner_mod.RunResult(
             exit_code=-1, stdout="", stderr=f"TIMEOUT after {timeout}s",
             timed_out=True, cli=cli, timeout_used=timeout,

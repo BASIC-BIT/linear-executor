@@ -38,7 +38,7 @@ from app import job_registry
 from app import linear_api
 from app import queue as q
 from app import runner
-from app.cli_registry import resolve_cli, resolve_model, resolve_timeout
+from app.cli_registry import resolve_auth, resolve_cli, resolve_model, resolve_timeout
 from app.folders import resolve_folder
 
 
@@ -414,10 +414,11 @@ def orchestrate_start(
         )
         cli = resolve_cli(data.get("labels"))
         model = resolve_model(data.get("labels"))
+        auth_mode = resolve_auth(data.get("labels"), cli)
         timeout = _pick_timeout(data.get("labels"), runner.DEFAULT_TIMEOUT_STAGE1, identifier)
         logger.info(
-            "stage1 — id=%s backend=%s model=%s timeout=%ds",
-            identifier, cli, model or "(default)", timeout,
+            "stage1 — id=%s backend=%s auth=%s model=%s timeout=%ds",
+            identifier, cli, auth_mode, model or "(default)", timeout,
         )
         files_before = _snapshot_files(cwd)
         try:
@@ -426,6 +427,7 @@ def orchestrate_start(
                 timeout=timeout,
                 on_start=lambda p: job_registry.register(identifier, p),
                 model=model,
+                auth_mode=auth_mode,
             )
         finally:
             job_registry.unregister(identifier)
@@ -607,10 +609,11 @@ def orchestrate_proxy(payload: dict, delivery_id: str | None = None) -> None:
 
         cli = resolve_cli(data.get("labels"))
         model = resolve_model(data.get("labels"))
+        auth_mode = resolve_auth(data.get("labels"), cli)
         timeout = _pick_timeout(data.get("labels"), runner.DEFAULT_TIMEOUT_PROXY, identifier)
         logger.info(
-            "proxy — id=%s backend=%s model=%s timeout=%ds",
-            identifier, cli, model or "(default)", timeout,
+            "proxy — id=%s backend=%s auth=%s model=%s timeout=%ds",
+            identifier, cli, auth_mode, model or "(default)", timeout,
         )
         files_before = _snapshot_files(cwd)
         try:
@@ -619,6 +622,7 @@ def orchestrate_proxy(payload: dict, delivery_id: str | None = None) -> None:
                 timeout=timeout,
                 on_start=lambda p: job_registry.register(identifier, p),
                 model=model,
+                auth_mode=auth_mode,
             )
         finally:
             job_registry.unregister(identifier)

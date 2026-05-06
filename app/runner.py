@@ -16,10 +16,35 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from app.cli_registry import DEFAULT_CLI, build_argv, resolve_bin
+from app.cli_registry import (
+    AUTH_REGISTRY,
+    DEFAULT_CLI,
+    AuthMode,
+    build_argv,
+    resolve_bin,
+)
 
 
 logger = logging.getLogger("linear-executor")
+
+
+def prepare_subprocess_env(cli: str, auth_mode: AuthMode) -> dict[str, str]:
+    """Build the env dict for a CLI subprocess based on its auth mode.
+
+    In OAuth mode the CLI's API-key env vars (per :data:`AUTH_REGISTRY`)
+    are stripped so the CLI falls back to its login/OAuth state instead
+    of the metered API-credit pool. In API-key mode the env passes
+    through unchanged.
+
+    Unknown CLIs (no registry entry) get the env unchanged in either
+    mode — better to over-pass than to silently break a CLI we don't
+    know about.
+    """
+    spec = AUTH_REGISTRY.get(cli)
+    if spec is None or auth_mode == "apikey" or not spec.api_key_env_vars:
+        return dict(os.environ)
+    blocked = set(spec.api_key_env_vars)
+    return {k: v for k, v in os.environ.items() if k not in blocked}
 
 
 # Hard cap on per-ticket timeout overrides (label-driven). Anything above this
@@ -83,6 +108,7 @@ def run_cli(
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
     on_start: Optional[Callable[[subprocess.Popen], None]] = None,
     model: Optional[str] = None,
+    auth_mode: AuthMode = "oauth",
 ) -> RunResult:
     """Invoke ``cli`` headless in ``cwd`` and return captured output.
 
@@ -101,10 +127,22 @@ def run_cli(
             logged but do not abort the run.
     """
     cwd.mkdir(parents=True, exist_ok=True)
-    cmd = build_argv(cli, prompt, model=model)
+    cmd = build_argv(cli, prompt, model=model, auth_mode=auth_mode)
+    sub_env = prepare_subprocess_env(cli, auth_mode)
+
+    # Log which env vars (if any) we filtered, so debugging "why is OAuth
+    # not picking up" stays cheap. Also log the chosen auth mode itself.
+    spec = AUTH_REGISTRY.get(cli)
+    if spec and auth_mode == "oauth" and spec.api_key_env_vars:
+        filtered = [k for k in spec.api_key_env_vars if k in os.environ]
+        filtered_note = (
+            f"filtered={','.join(filtered)}" if filtered else "filtered=(none-present)"
+        )
+    else:
+        filtered_note = "filtered=(n/a)"
     logger.info(
-        "%s subprocess starting — bin=%s cwd=%s timeout=%ds",
-        cli, cmd[0], cwd, timeout,
+        "%s subprocess starting — bin=%s cwd=%s timeout=%ds auth=%s %s",
+        cli, cmd[0], cwd, timeout, auth_mode, filtered_note,
     )
 
     proc = subprocess.Popen(
@@ -114,6 +152,7 @@ def run_cli(
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
+        env=sub_env,
     )
 
     if on_start is not None:

@@ -114,3 +114,64 @@ def test_run_result_default_timeout_used_is_back_compat():
         exit_code=0, stdout="", stderr="", timed_out=False, cli="claude",
     )
     assert r.timeout_used == runner.DEFAULT_TIMEOUT_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# Auth-aware env preparation (TES-716 follow-up)
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_env_oauth_filters_claude_anthropic_key(monkeypatch):
+    from app.runner import prepare_subprocess_env
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xyz")
+    monkeypatch.setenv("LINEAR_API_KEY", "lin_xxx")
+    env = prepare_subprocess_env("claude", "oauth")
+    assert "ANTHROPIC_API_KEY" not in env
+    assert env["LINEAR_API_KEY"] == "lin_xxx"
+
+
+def test_prepare_env_apikey_passes_through(monkeypatch):
+    from app.runner import prepare_subprocess_env
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xyz")
+    env = prepare_subprocess_env("claude", "apikey")
+    assert env.get("ANTHROPIC_API_KEY") == "sk-ant-xyz"
+
+
+def test_prepare_env_oauth_filters_codex_openai_keys(monkeypatch):
+    from app.runner import prepare_subprocess_env
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://x.example/v1")
+    env = prepare_subprocess_env("codex", "oauth")
+    assert "OPENAI_API_KEY" not in env
+    assert "OPENAI_BASE_URL" not in env
+
+
+def test_prepare_env_oauth_filters_gemini_keys(monkeypatch):
+    from app.runner import prepare_subprocess_env
+    monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+    monkeypatch.setenv("GOOGLE_API_KEY", "ga-key")
+    env = prepare_subprocess_env("gemini", "oauth")
+    assert "GEMINI_API_KEY" not in env
+    assert "GOOGLE_API_KEY" not in env
+
+
+def test_prepare_env_oauth_filters_all_provider_keys_for_opencode(monkeypatch):
+    from app.runner import prepare_subprocess_env
+    for k in (
+        "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+        "GROQ_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+    ):
+        monkeypatch.setenv(k, f"{k}-value")
+    env = prepare_subprocess_env("opencode", "oauth")
+    for k in (
+        "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+        "GROQ_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+    ):
+        assert k not in env, f"{k} should have been filtered in opencode-oauth mode"
+
+
+def test_prepare_env_unknown_cli_passes_through_unchanged(monkeypatch):
+    from app.runner import prepare_subprocess_env
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    env = prepare_subprocess_env("unknown_cli", "oauth")
+    assert env.get("ANTHROPIC_API_KEY") == "sk-ant"

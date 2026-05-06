@@ -123,7 +123,7 @@ Tickets in the *AI Batch* state get queued and processed in a separate lane, sui
 - SQLite queue with WAL mode — survives restarts
 - Retry with backoff before final-failure reset
 - Boot-time recovery: jobs left in `running` after a hard restart are automatically returned to the queue
-- 149 tests covering signature, queue, dispatch, cancel, batch, attachments, orchestrator paths
+- 195 tests covering signature, queue, dispatch, cancel, batch, attachments, orchestrator paths, auth-mode resolution + env filtering
 
 ## How it differs from OpenClaw, Hermes Agent, ClaudeClaw
 
@@ -214,8 +214,36 @@ Most installs only need (1) and (3): the `folder:` description override for ad-h
 | `cli:claude` / `cli:opencode` / `cli:codex` / `cli:gemini` / `cli:forge` | choose the coding CLI for this ticket |
 | `model:<id>` | override the registry default model (e.g. `model:opencode-go/glm-5.1`) |
 | `timeout:<sec>` | override the per-path default timeout (e.g. `timeout:1800` for a 30-min run, or `timeout:60` for a quick smoke). Trailing `s` accepted (`timeout:1800s`). Clamped to a 2 h hard cap. |
+| `auth:oauth` / `auth:apikey` | override the auth mode for the chosen CLI — see "Auth strategy" below |
 
-Group all three as Linear label groups for a cleaner picker (each group mutually exclusive).
+Group all four as Linear label groups for a cleaner picker (each group mutually exclusive).
+
+## Auth strategy — OAuth vs API key, per CLI
+
+Every supported CLI offers two authentication paths:
+
+- **OAuth (default)** — uses the CLI's login state for a subscription plan: Claude Max, Codex Plus, Gemini Code Assist, OpenCode Go. Calls count against your plan quota, no metered billing.
+- **API key** — uses a provider env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, …). Calls count against API credits.
+
+The catch: if both are present, the CLIs **prefer the API key**. So if your `.env` exports `ANTHROPIC_API_KEY` (because some other tool needs it), `claude` will silently route through API credits and bypass your Max-Plan subscription. Same pattern for codex/gemini/opencode. We hit this in production (TES-716) — a `Credit balance is too low` error despite an active Max-Plan subscription.
+
+The executor solves this declaratively, per CLI:
+
+1. **OAuth-by-default**: when the runner spawns a CLI, it filters that CLI's API-key env vars from the subprocess environment unless the ticket explicitly opts in to API-key mode. The keys still live in `.env` for other consumers — only the spawned CLI sees them stripped.
+2. **Per-CLI metadata** in `app/cli_registry.py:AUTH_REGISTRY` declares which env vars belong to which CLI's API-key path, plus auth-mode-specific default models (e.g. opencode uses `opencode-go/minimax-m2.5` in OAuth mode, `openrouter/anthropic/claude-haiku-4.5` in API-key mode).
+3. **Three-tier override** for choosing the mode per ticket:
+   - **Linear label** `auth:oauth` or `auth:apikey` — highest precedence, per-ticket
+   - **Per-CLI env** `LINEAR_EXECUTOR_<CLI>_AUTH=oauth|apikey` (e.g. `LINEAR_EXECUTOR_CLAUDE_AUTH=apikey`) — global per CLI
+   - **AuthSpec default** in the registry — currently `oauth` for all known CLIs
+
+The runner logs the chosen mode and which env vars were filtered on every run:
+
+```
+proxy — id=TES-737 backend=codex auth=oauth model=(default)
+codex subprocess starting — auth=oauth filtered=OPENAI_API_KEY
+```
+
+Useful when something authenticates against the wrong provider — the log line tells you immediately whether the OAuth path was taken and what got stripped.
 
 ### Timeout defaults
 
@@ -261,10 +289,11 @@ originals/                        scraped Linear webhook docs (reference)
 - **Phase 10.2**: live status-comment lifecycle (queued → running → done).
 - **Phase 10.3**: opencode `--model` flag, shared dev-workspace `.env` loading for subprocess CLIs.
 - **Phase 10.4**: filter lifecycle comments out of follow-up context, per-ticket `model:<id>` override.
+- **TES-716 / TES-737 / TES-738**: per-CLI auth strategy with `AuthSpec` registry, label-driven `auth:oauth` / `auth:apikey` override, OAuth-by-default env filtering. Codex now wraps `--dangerously-bypass-approvals-and-sandbox` analogous to Claude's `--dangerously-skip-permissions` (Codex' bubblewrap sandbox needs user-namespace network caps unavailable on standard VPS).
 
 ## Status
 
-Production-running on the maintainer's dev-server, processing live tickets daily across `claude` and `opencode` backends. **Codex / Gemini / Forge backends are in the registry but not yet smoke-tested end-to-end** — see "Backend smoke-tests" issue. **Repo private** until those backends round-trip.
+Production-running on the maintainer's dev-server, processing live tickets daily. End-to-end smoke-tested with auth-mode verification: `claude` (OAuth Max-Plan, TES-735/TES-736), `codex` (OAuth Plus Plan, TES-737), `opencode` (OAuth Go-Plan, TES-738). **Gemini and Forge backends are in the registry but not yet smoke-tested end-to-end.** **Repo private** until those round-trip too.
 
 If you try it on your own setup and run into the gaps, please open an issue. Especially interested in feedback from people running it as the bridge for their own chatbot stack.
 
@@ -285,7 +314,7 @@ If you try it on your own setup and run into the gaps, please open an issue. Esp
   - The coding CLI's own training/alignment (Claude Code is generally well-behaved)
   - Your prompt being clear about scope
   - Worktree isolation absorbing accidental file edits
-- The default `--dangerously-skip-permissions` flag on Claude Code means **no human-in-the-loop confirmation per shell command** — fast but trust-heavy. Other CLIs have similar non-interactive modes.
+- The default `--dangerously-skip-permissions` flag on Claude Code (and `--dangerously-bypass-approvals-and-sandbox` on Codex) means **no human-in-the-loop confirmation per shell command** — fast but trust-heavy. Other CLIs have similar non-interactive modes.
 - No sandboxing of network egress, filesystem writes, or process spawn.
 
 ### Hardening you can do today (no code changes)

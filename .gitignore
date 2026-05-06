@@ -53,3 +53,7 @@ CLAUDE.md
 
 # Local research artefacts (third-party transcripts) — keep local, do not publish
 originals/youtube-*.md
+
+# Playwright-MCP runtime state + ad-hoc browser screenshots
+.playwright-mcp/
+*.png
