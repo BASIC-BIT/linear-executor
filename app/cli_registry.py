@@ -109,7 +109,11 @@ AUTH_REGISTRY: dict[str, AuthSpec] = {
             "GOOGLE_API_KEY",
             "GEMINI_API_KEY",
         ),
-        default_oauth_model="opencode-go/minimax-m2.5",
+        # Default: DeepSeek V4 Flash via Go-Plan — released 2026-04-24, ~5x höhere
+        # Quota als MiniMax M2.5 (31k/5h vs 6k/5h), 1M context vs 128k, in Reviews
+        # mindestens auf Augenhöhe für Standard-Coding-Tasks. Pro-Variante via
+        # `model:opencode-go/deepseek-v4-pro`-Label für Heavy-Lifting.
+        default_oauth_model="opencode-go/deepseek-v4-flash",
         default_apikey_model="openrouter/anthropic/claude-haiku-4.5",
     ),
     # Forge: auth pattern not yet documented in this codebase. Empty spec

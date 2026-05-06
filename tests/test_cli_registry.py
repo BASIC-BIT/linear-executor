@@ -188,7 +188,7 @@ def test_resolve_auth_invalid_env_falls_through(monkeypatch):
 def test_build_argv_opencode_oauth_picks_go_plan_model():
     argv = build_argv("opencode", "hi", auth_mode="oauth")
     assert "--model" in argv
-    assert argv[argv.index("--model") + 1] == "opencode-go/minimax-m2.5"
+    assert argv[argv.index("--model") + 1] == "opencode-go/deepseek-v4-flash"
 
 
 def test_build_argv_opencode_apikey_picks_provider_model():
