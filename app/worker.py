@@ -63,8 +63,6 @@ def _dispatch(job: q.Job) -> None:
     payload = job.payload
     if job.kind == "start":
         orchestrate_start(payload, delivery_id=job.delivery_id)
-    elif job.kind == "batch":
-        orchestrate_start(payload, delivery_id=job.delivery_id, final_state="Done")
     elif job.kind == "proxy":
         orchestrate_proxy(payload, delivery_id=job.delivery_id)
     elif job.kind == "complete":

@@ -1,11 +1,13 @@
 """Decide whether and how to react to a Linear webhook payload.
 
-Two transitions trigger us:
+Two transition groups trigger us:
 
-- ``* → AI Implementation`` (Stage 1) — start the executor: resolve folder,
-  download attachments, run Claude Code, post results, set state to ``In Review``.
-- ``In Review → Done`` (Stage 2) — Bastian approved: merge the work branch
-  (when one exists), clean up the worktree, post a final comment.
+- ``* → AI Planning & Research`` — start the executor with the planning prompt,
+  then set state to ``Human Design Review``.
+- ``* → AI Implementation`` — start the executor with the implementation prompt,
+  then set state to ``Draft PR Ready``.
+- ``* → Done`` (Stage 2) — BASIC approved final completion: merge the work
+  branch when one exists, clean up the worktree, post a final comment.
 
 Anything else is ignored (we still respond 200 so Linear doesn't retry).
 """
@@ -17,11 +19,12 @@ import os
 logger = logging.getLogger("linear-executor")
 
 
+PLANNING_STATE_NAME = "AI Planning & Research"
 START_STATE_NAME = "AI Implementation"
+START_STATE_NAMES = (PLANNING_STATE_NAME, START_STATE_NAME)
 COMPLETE_STATE_NAME = "Done"
-REVIEW_STATE_NAME = "In Review"
+DRAFT_READY_STATE_NAME = "Draft PR Ready"
 CANCEL_STATE_NAME = "Stop AI"
-BATCH_STATE_NAME = "AI Batch"
 
 # Tickets in this Linear project run via the lightweight proxy flow
 # (Phase 4): no folder mapping, no git worktree, status straight to Done.
@@ -60,23 +63,8 @@ def _is_state_transition_to(payload: dict, state_name: str) -> bool:
 
 
 def should_start_execution(payload: dict) -> bool:
-    """True when the ticket either just transitioned into AI Implementation
-    or was just created already in that state."""
-    return _is_state_transition_to(payload, START_STATE_NAME)
-
-
-def should_start_batch_run(payload: dict) -> bool:
-    """True when the ticket transitioned into AI Batch.
-
-    Batch mode is for marathon scenarios where the user wants several
-    tickets worked through unattended without the In-Review-Roundtrip.
-    Each batch ticket runs through the same orchestrator path as a
-    Stage1 run, but the final state goes directly to Done instead of
-    In Review. The user can queue many tickets on AI Batch; the worker
-    processes them sequentially (one Claude subprocess at a time per
-    lane).
-    """
-    return _is_state_transition_to(payload, BATCH_STATE_NAME)
+    """True when the ticket entered any AI-active start state."""
+    return any(_is_state_transition_to(payload, state) for state in START_STATE_NAMES)
 
 
 def should_cancel_run(payload: dict) -> bool:

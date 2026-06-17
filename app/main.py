@@ -27,7 +27,6 @@ from app.filter import (  # noqa: E402
     is_proxy_ticket,
     should_cancel_run,
     should_complete_review,
-    should_start_batch_run,
     should_start_execution,
 )
 from app.signature import verify_signature  # noqa: E402
@@ -161,14 +160,6 @@ def create_app() -> FastAPI:
             logger.info(
                 "ENQUEUED %s — id=%s state=%s delivery=%s job=%d",
                 stage.upper(), identifier, state_name, delivery_id, job_id,
-            )
-            _post_status_comment(db_path, data.get("id"), job_id, stage, identifier, logger)
-        elif should_start_batch_run(payload):
-            stage = "batch"
-            job_id = q.enqueue(db_path, kind="batch", payload=payload, delivery_id=delivery_id)
-            logger.info(
-                "ENQUEUED BATCH — id=%s state=%s delivery=%s job=%d",
-                identifier, state_name, delivery_id, job_id,
             )
             _post_status_comment(db_path, data.get("id"), job_id, stage, identifier, logger)
         elif should_cancel_run(payload):

@@ -9,9 +9,11 @@ from app.cli_registry import (
     CLI_LABEL_PREFIX,
     CLI_REGISTRY,
     DEFAULT_CLI,
+    DEFAULT_OPENCODE_MODEL,
     build_argv,
     resolve_context_mode,
     resolve_cli,
+    resolve_reasoning,
     resolve_timeout,
 )
 
@@ -162,6 +164,46 @@ def test_resolve_context_mode_multiple_labels_pick_alphabetical_first(caplog):
     assert "multiple context:* labels" in caplog.text
 
 
+# --- resolve_reasoning -------------------------------------------------------
+
+
+def test_resolve_reasoning_no_labels_returns_none():
+    assert resolve_reasoning(None) is None
+    assert resolve_reasoning([]) is None
+
+
+@pytest.mark.parametrize(
+    ("label", "expected"),
+    [
+        ("reasoning:minimal", "minimal"),
+        ("reasoning:low", "low"),
+        ("reasoning:medium", "medium"),
+        ("reasoning:high", "high"),
+        ("reasoning:X-High", "x-high"),
+        ("reasoning:xhigh", "x-high"),
+        ("reasoning:x_high", "x-high"),
+        ("reasoning:default", "default"),
+    ],
+)
+def test_resolve_reasoning_normalizes_supported_values(label, expected):
+    assert resolve_reasoning([label]) == expected
+
+
+def test_resolve_reasoning_dict_label_shape_supported():
+    assert resolve_reasoning([{"name": "reasoning:high"}]) == "high"
+
+
+def test_resolve_reasoning_invalid_value_raises():
+    with pytest.raises(ValueError, match="unsupported reasoning level"):
+        resolve_reasoning(["reasoning:turbo"])
+
+
+def test_resolve_reasoning_multiple_labels_pick_alphabetical_first(caplog):
+    with caplog.at_level("WARNING"):
+        assert resolve_reasoning(["reasoning:medium", "reasoning:high"]) == "high"
+    assert "multiple reasoning:* labels" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Auth resolution (TES-716 follow-up — multi-CLI auth)
 # ---------------------------------------------------------------------------
@@ -217,7 +259,7 @@ def test_build_argv_opencode_oauth_picks_go_plan_model():
     argv = build_argv("opencode", "hi", auth_mode="oauth")
     assert "--pure" in argv
     assert "--model" in argv
-    assert argv[argv.index("--model") + 1] == "opencode/deepseek-v4-flash-free"
+    assert argv[argv.index("--model") + 1] == DEFAULT_OPENCODE_MODEL
 
 
 def test_build_argv_opencode_apikey_picks_provider_model():
@@ -229,6 +271,24 @@ def test_build_argv_opencode_apikey_picks_provider_model():
 def test_build_argv_explicit_model_wins_over_auth_default():
     argv = build_argv("opencode", "hi", model="custom/model", auth_mode="oauth")
     assert argv[argv.index("--model") + 1] == "custom/model"
+
+
+def test_build_argv_opencode_adds_reasoning_variant():
+    argv = build_argv("opencode", "hi", reasoning="low", auth_mode="oauth")
+    assert "--variant" in argv
+    assert argv[argv.index("--variant") + 1] == "low"
+
+
+def test_build_argv_default_reasoning_omits_variant():
+    argv = build_argv("opencode", "hi", reasoning="default", auth_mode="oauth")
+    assert "--variant" not in argv
+
+
+def test_build_argv_non_opencode_ignores_reasoning(caplog):
+    with caplog.at_level("WARNING"):
+        argv = build_argv("claude", "hi", reasoning="high", auth_mode="oauth")
+    assert "--variant" not in argv
+    assert "reasoning:high ignored" in caplog.text
 
 
 def test_build_argv_claude_no_auto_model_either_mode():

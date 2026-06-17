@@ -244,7 +244,7 @@ def has_cancelled_job(db_path: Path, ticket_id: str) -> bool:
     """True if any job for this ticket is in ``cancelled`` state.
 
     Used by orchestrate_start / orchestrate_proxy after run_claude returns
-    to decide whether to skip post-run side-effects (state→In Review,
+    to decide whether to skip post-run side-effects (state→Draft PR Ready,
     run-comment) — the cancel handler already posted a comment and
     flipped the queue status. See TES-596 edge-case.
     """

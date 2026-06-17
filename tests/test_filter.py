@@ -25,6 +25,12 @@ def test_triggers_on_fresh_transition_to_ai_implementation():
     assert should_trigger(_base_payload()) is True
 
 
+def test_triggers_on_fresh_transition_to_ai_planning_research():
+    p = _base_payload()
+    p["data"]["state"] = {"name": "AI Planning & Research", "type": "started"}
+    assert should_trigger(p) is True
+
+
 def test_does_not_trigger_when_state_unchanged():
     # Description edit while already in AI Implementation — updatedFrom has no stateId
     p = _base_payload(updatedFrom={"description": "old description text"})

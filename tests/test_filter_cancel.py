@@ -23,7 +23,7 @@ def test_should_cancel_run_true_when_created_directly_in_canceled():
 
 
 def test_should_cancel_run_false_for_other_states():
-    for name in ("Todo", "In Progress", "AI Implementation", "Done", "In Review"):
+    for name in ("Todo", "In Progress", "AI Implementation", "Done", "Draft PR Ready"):
         payload = {
             "action": "update",
             "updatedFrom": {"stateId": "old"},

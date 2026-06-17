@@ -77,10 +77,38 @@ def test_stage1_runs_claude_posts_comment_sets_in_review(patched_orchestrator):
     assert "(mocked claude output)" in body  # from conftest run_cli stub
     assert "TES-700" in body
     assert "d-1" in body
-    # Status moved to In Review
+    # Status moved to Draft PR Ready
     assert patched_orchestrator["state_changes"] == [
-        {"issue_id": "issue-uuid", "state_id": "state-id-for-In Review"}
+        {"issue_id": "issue-uuid", "state_id": "state-id-for-Draft PR Ready"}
     ]
+
+
+def test_planning_state_loads_prompt_and_moves_to_human_design_review(monkeypatch, patched_orchestrator, tmp_path):
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    (prompts_dir / "ai-planning-research.md").write_text("planning sentinel\nDo not edit product code.", encoding="utf-8")
+    monkeypatch.setenv("LINEAR_CONTROLLER_PROMPTS_DIR", str(prompts_dir))
+
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
+        captured["prompt"] = prompt
+        return runner_mod.RunResult(0, "ok", "", False, cli=cli)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    orchestrator.orchestrate_start(
+        _payload(identifier="TES-PLAN", state_name="AI Planning & Research"),
+        delivery_id="d-plan",
+    )
+
+    assert "Workflow state: AI Planning & Research" in captured["prompt"]
+    assert "Controller prompt for `AI Planning & Research`" in captured["prompt"]
+    assert "planning sentinel" in captured["prompt"]
+    assert patched_orchestrator["state_changes"] == [
+        {"issue_id": "issue-uuid", "state_id": "state-id-for-Human Design Review"}
+    ]
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "workflow state: `AI Planning & Research`" in body
 
 
 def test_stage1_with_attachments_downloads_into_per_ticket_folder(patched_orchestrator, tmp_path):
@@ -147,6 +175,21 @@ def test_stage1_non_claude_prompt_omits_claude_linear_mcp_progress(monkeypatch, 
     assert captured["cli"] == "opencode"
     assert "Progress updates" not in captured["prompt"]
     assert "mcp__claude_ai_Linear__save_comment" not in captured["prompt"]
+
+
+def test_stage1_passes_reasoning_label_to_runner(monkeypatch, patched_orchestrator):
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, reasoning=None, auth_mode="oauth"):
+        captured["reasoning"] = reasoning
+        return runner_mod.RunResult(0, "ok", "", False, cli=cli)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    payload = _payload(identifier="TES-REASON", issue_id="iss-reason")
+    payload["data"]["labels"] = [{"name": "cli:opencode"}, {"name": "reasoning:low"}]
+    orchestrator.orchestrate_start(payload, delivery_id="d-reason")
+
+    assert captured["reasoning"] == "low"
 
 
 def test_proxy_prompt_carries_progress_instructions(monkeypatch, patched_orchestrator, tmp_path):
@@ -484,8 +527,8 @@ def test_stage2_handles_merge_conflict_and_rolls_back_status(monkeypatch, patche
 
     last = patched_orchestrator["comments"][-1]["body"]
     assert "Conflict" in last or "conflict" in last
-    # State rolled back to In Review
-    assert any(s["state_id"] == "state-id-for-In Review" for s in patched_orchestrator["state_changes"][1:])
+    # State rolled back to Draft PR Ready
+    assert any(s["state_id"] == "state-id-for-Draft PR Ready" for s in patched_orchestrator["state_changes"][1:])
 
 
 def test_stage2_removes_empty_ticket_dir_after_merge(monkeypatch, patched_orchestrator, tmp_path):

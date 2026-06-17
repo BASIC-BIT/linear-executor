@@ -30,6 +30,7 @@ logger = logging.getLogger("linear-executor")
 
 CLI_LABEL_PREFIX = "cli:"
 MODEL_LABEL_PREFIX = "model:"
+REASONING_LABEL_PREFIX = "reasoning:"
 TIMEOUT_LABEL_PREFIX = "timeout:"
 AUTH_LABEL_PREFIX = "auth:"
 CONTEXT_LABEL_PREFIX = "context:"
@@ -40,6 +41,11 @@ VALID_AUTH_MODES: tuple[AuthMode, ...] = ("oauth", "apikey")
 ContextMode = Literal["fresh", "fork"]
 VALID_CONTEXT_MODES: tuple[ContextMode, ...] = ("fresh", "fork")
 DEFAULT_CONTEXT_MODE: ContextMode = "fresh"
+ReasoningLevel = Literal["minimal", "low", "medium", "high", "x-high", "default"]
+VALID_REASONING_LEVELS: tuple[ReasoningLevel, ...] = (
+    "minimal", "low", "medium", "high", "x-high", "default",
+)
+DEFAULT_OPENCODE_MODEL = "openai/gpt-5.5-fast"
 
 
 # argv prefix per CLI; the prompt is appended as the final element.
@@ -110,11 +116,9 @@ AUTH_REGISTRY: dict[str, AuthSpec] = {
             "GOOGLE_API_KEY",
             "GEMINI_API_KEY",
         ),
-        # Default: DeepSeek V4 Flash via Go-Plan — released 2026-04-24, ~5x höhere
-        # Quota als MiniMax M2.5 (31k/5h vs 6k/5h), 1M context vs 128k, in Reviews
-        # mindestens auf Augenhöhe für Standard-Coding-Tasks. Pro-Variante via
-        # `model:opencode-go/deepseek-v4-pro`-Label für Heavy-Lifting.
-        default_oauth_model="opencode/deepseek-v4-flash-free",
+        # BASIC's default OpenCode runtime profile: GPT-5.5 Fast, with
+        # reasoning controlled separately through ``reasoning:<level>`` labels.
+        default_oauth_model=DEFAULT_OPENCODE_MODEL,
         default_apikey_model="openrouter/anthropic/claude-haiku-4.5",
     ),
     # Forge: auth pattern not yet documented in this codebase. Empty spec
@@ -218,6 +222,45 @@ def resolve_model(labels) -> str | None:
             model_labels, model_labels[0],
         )
     return model_labels[0][len(MODEL_LABEL_PREFIX):] or None
+
+
+def _normalize_reasoning(raw: str) -> ReasoningLevel | None:
+    value = raw.strip().lower().replace("_", "-").replace(" ", "-")
+    if value in ("xhigh", "extra-high", "extra-high", "x-hi", "xhi"):
+        value = "x-high"
+    if value in VALID_REASONING_LEVELS:
+        return value  # type: ignore[return-value]
+    return None
+
+
+def resolve_reasoning(labels) -> ReasoningLevel | None:
+    """Pick a reasoning level from ``reasoning:<level>`` Linear labels.
+
+    Supported normalized values are ``minimal``, ``low``, ``medium``,
+    ``high``, ``x-high``, and ``default``. Common aliases such as
+    ``X-High``, ``xhigh``, and ``x_high`` normalize to ``x-high``.
+
+    Invalid reasoning labels fail fast instead of silently falling back; the
+    orchestrator catches the error and posts a clear Linear failure comment.
+    """
+    reasoning_labels = sorted(
+        n for n in _label_names(labels) if n.startswith(REASONING_LABEL_PREFIX)
+    )
+    if not reasoning_labels:
+        return None
+    if len(reasoning_labels) > 1:
+        logger.warning(
+            "resolve_reasoning — multiple reasoning:* labels %r; picking %r",
+            reasoning_labels, reasoning_labels[0],
+        )
+    raw = reasoning_labels[0][len(REASONING_LABEL_PREFIX):]
+    normalized = _normalize_reasoning(raw)
+    if normalized is None:
+        valid = ", ".join(VALID_REASONING_LEVELS)
+        raise ValueError(
+            f"unsupported reasoning level {raw!r}; expected one of: {valid}"
+        )
+    return normalized
 
 
 def resolve_auth(labels, cli: str) -> AuthMode:
@@ -350,6 +393,7 @@ def build_argv(
     prompt: str,
     *,
     model: str | None = None,
+    reasoning: ReasoningLevel | None = None,
     auth_mode: AuthMode = "oauth",
 ) -> list[str]:
     """Construct the full argv for invoking ``cli_name`` with ``prompt``.
@@ -362,6 +406,9 @@ def build_argv(
 
     If a model is chosen, ``--model X`` is appended before the prompt
     (or replaced in-place if the registry prefix already contains it).
+
+    OpenCode exposes reasoning effort through ``--variant``. Other backends
+    are left unchanged until their adapter capability is explicitly modeled.
     """
     if cli_name not in CLI_REGISTRY:
         raise ValueError(f"unknown cli {cli_name!r}; known: {sorted(CLI_REGISTRY)}")
@@ -383,5 +430,13 @@ def build_argv(
             argv[i + 1] = chosen_model
         else:
             argv.extend(["--model", chosen_model])
+    if reasoning and reasoning != "default":
+        if cli_name == "opencode":
+            argv.extend(["--variant", reasoning])
+        else:
+            logger.warning(
+                "build_argv — reasoning:%s ignored for unsupported cli %r",
+                reasoning, cli_name,
+            )
     argv.append(prompt)
     return argv

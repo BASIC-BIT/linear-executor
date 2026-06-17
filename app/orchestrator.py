@@ -3,7 +3,8 @@
 Two stages, each runs as a FastAPI BackgroundTask so the webhook can return 200
 to Linear within the 5-second budget while real work happens off-thread.
 
-**Stage 1 — orchestrate_start** (state ``* → AI Implementation``):
+**Stage 1 — orchestrate_start** (state ``* → AI Planning & Research`` or
+``* → AI Implementation``):
 1. Resolve the target folder (mapping / override / fallback).
 2. If the folder is a git repo, create a worktree on a fresh ``ticket/<id>``
    branch and run Claude there. Otherwise run Claude in the folder directly.
@@ -11,14 +12,14 @@ to Linear within the 5-second budget while real work happens off-thread.
 4. Run Claude headless with safety rules baked into the prompt.
 5. If git: commit any pending changes, post diff + shortlog as comment.
    If non-git: post Claude's stdout as comment.
-6. Set state to ``In Review``.
+6. Set state to the workflow-specific next gate.
 
-**Stage 2 — orchestrate_complete** (state ``In Review → Done``):
+**Stage 2 — orchestrate_complete** (state ``* → Done``):
 - If a worktree exists for this ticket: ``git merge --no-ff`` to main, push if
   origin is configured, remove worktree, delete branch, post merge summary.
 - If no worktree (e.g. a non-code ticket like the Hello-World test): no-op
   confirmation comment.
-- On merge conflict: post conflict info, set state back to ``In Review``.
+- On merge conflict: post conflict info, set state back to ``Draft PR Ready``.
 
 If anything fails we log + post an error comment but do not raise — the webhook
 response is already on its way back to Linear.
@@ -38,7 +39,14 @@ from app import job_registry
 from app import linear_api
 from app import queue as q
 from app import runner
-from app.cli_registry import resolve_auth, resolve_cli, resolve_context_mode, resolve_model, resolve_timeout
+from app.cli_registry import (
+    resolve_auth,
+    resolve_cli,
+    resolve_context_mode,
+    resolve_model,
+    resolve_reasoning,
+    resolve_timeout,
+)
 from app.folders import resolve_folder
 
 
@@ -55,9 +63,20 @@ HEADER_CANCELLED = "⏸ **Linear-Executor** — Run Cancelled"
 MAX_OUTPUT_CHARS = 25_000
 MAX_INHERITED_CONTEXT_CHARS = 12_000
 MAX_INHERITED_COMMENT_CHARS = 6_000
+PROMPTS_DIR_ENV = "LINEAR_CONTROLLER_PROMPTS_DIR"
+
+START_STATE_FINAL_STATES = {
+    "AI Planning & Research": "Human Design Review",
+    "AI Implementation": "Draft PR Ready",
+}
+
+STATE_PROMPT_FILES = {
+    "AI Planning & Research": "ai-planning-research.md",
+    "AI Implementation": "ai-implementation.md",
+}
 
 # Linear team UUID. Required for state-id lookups (Backlog / Todo / AI
-# Implementation / In Review / Done). Set LINEAR_TEAM_ID in .env to your
+# Implementation / Draft PR Ready / Done). Set LINEAR_TEAM_ID in .env to your
 # team's UUID — find it at Linear Settings → Teams → <your team> in the URL,
 # or via the GraphQL API.
 TEAM_ID = os.environ.get("LINEAR_TEAM_ID", "").strip()
@@ -94,6 +113,37 @@ def _truncate(s: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     if len(s) <= limit:
         return s
     return s[:limit] + f"\n\n…[truncated, {len(s) - limit} more chars]"
+
+
+def _workflow_state_name(data: dict) -> str | None:
+    state = data.get("state") or {}
+    name = state.get("name")
+    return name if isinstance(name, str) and name else None
+
+
+def _final_state_for_workflow_state(workflow_state: str | None) -> str:
+    return START_STATE_FINAL_STATES.get(workflow_state or "", "Draft PR Ready")
+
+
+def _load_state_prompt(workflow_state: str | None) -> str | None:
+    if not workflow_state:
+        return None
+    filename = STATE_PROMPT_FILES.get(workflow_state)
+    if not filename:
+        return None
+    prompts_dir = os.environ.get(PROMPTS_DIR_ENV, "").strip()
+    if not prompts_dir:
+        return None
+    path = Path(prompts_dir).expanduser() / filename
+    try:
+        text = path.read_text(encoding="utf-8-sig").strip()
+    except FileNotFoundError:
+        logger.warning("prompt — state=%s prompt file missing: %s", workflow_state, path)
+        return None
+    except OSError as exc:
+        logger.warning("prompt — state=%s could not read %s: %s", workflow_state, path, exc)
+        return None
+    return text or None
 
 
 def _pick_timeout(labels, default: int, identifier: str) -> int:
@@ -258,6 +308,8 @@ def _build_prompt(
     comments: list[linear_api.Comment] | None = None,
     cli: str = "claude",
     context_mode: str = "fresh",
+    workflow_state: str | None = None,
+    state_prompt: str | None = None,
 ) -> str:
     title = data.get("title", "")
     description = data.get("description", "") or ""
@@ -265,6 +317,9 @@ def _build_prompt(
     issue_id = data.get("id", "")
 
     parts = [f"You are working on Linear ticket {identifier}: {title}", ""]
+    if workflow_state:
+        parts.append(f"Workflow state: {workflow_state}")
+        parts.append("")
     if in_git:
         parts.append(f"Working directory (a git worktree): {cwd}")
         parts.append(f"Branch: {branch}")
@@ -280,6 +335,12 @@ def _build_prompt(
         parts.append("")
     if issue_id and _supports_linear_progress(cli):
         parts.append(PROGRESS_INSTRUCTIONS.replace("{issue_id}", issue_id))
+        parts.append("")
+    if state_prompt:
+        parts.append("---")
+        parts.append(f"Controller prompt for `{workflow_state}`:")
+        parts.append("")
+        parts.append(state_prompt)
         parts.append("")
     parts.append("---")
     parts.append("Ticket description follows:")
@@ -307,12 +368,15 @@ def _compose_run_comment(
     shortlog_text: str | None = None,
     upload_results: list[tuple[Path, str | None, str | None]] | None = None,
     context_mode: str = "fresh",
+    workflow_state: str | None = None,
 ) -> str:
     lines: list[str] = [HEADER_RUN, ""]
 
     lines.append("**Folder**")
     lines.append(f"- strategy: `{folder_res.strategy}`")
     lines.append(f"- path: `{folder_res.path}`")
+    if workflow_state:
+        lines.append(f"- workflow state: `{workflow_state}`")
     lines.append(f"- context: `{context_mode}`")
     if branch:
         lines.append(f"- branch: `{branch}`")
@@ -437,20 +501,20 @@ def orchestrate_start(
     payload: dict,
     delivery_id: str | None = None,
     *,
-    final_state: str = "In Review",
+    final_state: str | None = None,
 ) -> None:
-    """Stage 1 — handle a fresh ``→ AI Implementation`` transition. Never raises.
+    """Stage 1 — handle a fresh transition into an AI-active start state.
 
     Args:
-        final_state: Linear workflow state to move the ticket to after the
-            run. Defaults to ``"In Review"`` (Stage1 standard) so the user
-            can review and merge. ``"Done"`` is used by batch-mode runs
-            (TES-612) where the user has explicitly opted into unattended
-            marathon processing.
+        final_state: Optional override for the Linear workflow state to move
+            the ticket to after the run. When omitted, the current workflow
+            state chooses the next gate.
     """
     data = payload.get("data") or {}
     issue_id = data.get("id", "")
     identifier = data.get("identifier", "?")
+    workflow_state = _workflow_state_name(data)
+    target_state = final_state or _final_state_for_workflow_state(workflow_state)
 
     try:
         folder_res = resolve_folder(data)
@@ -487,32 +551,41 @@ def orchestrate_start(
 
         cli = resolve_cli(data.get("labels"))
         model = resolve_model(data.get("labels"))
+        reasoning = resolve_reasoning(data.get("labels"))
         auth_mode = resolve_auth(data.get("labels"), cli)
         context_mode = resolve_context_mode(data.get("labels"))
+        state_prompt = _load_state_prompt(workflow_state)
         prompt = _build_prompt(
             data, cwd=cwd, attachments_dir=attachments_dir,
             in_git=is_git, branch=branch, comments=comments, cli=cli,
-            context_mode=context_mode,
+            context_mode=context_mode, workflow_state=workflow_state,
+            state_prompt=state_prompt,
         )
         timeout = _pick_timeout(data.get("labels"), runner.DEFAULT_TIMEOUT_STAGE1, identifier)
         logger.info(
-            "stage1 — id=%s backend=%s auth=%s context=%s model=%s timeout=%ds",
-            identifier, cli, auth_mode, context_mode, model or "(default)", timeout,
+            "stage1 — id=%s backend=%s auth=%s context=%s model=%s reasoning=%s timeout=%ds",
+            identifier, cli, auth_mode, context_mode, model or "(default)",
+            reasoning or "(default)", timeout,
         )
         files_before = _snapshot_files(cwd)
         try:
+            run_kwargs = {
+                "timeout": timeout,
+                "on_start": lambda p: job_registry.register(identifier, p),
+                "model": model,
+                "auth_mode": auth_mode,
+            }
+            if reasoning is not None:
+                run_kwargs["reasoning"] = reasoning
             run_result = runner.run_cli(
                 cli, prompt, cwd,
-                timeout=timeout,
-                on_start=lambda p: job_registry.register(identifier, p),
-                model=model,
-                auth_mode=auth_mode,
+                **run_kwargs,
             )
         finally:
             job_registry.unregister(identifier)
 
         # If Cancel webhook fired during the run, skip the post-run side-effects
-        # (no run-comment, no state→In Review). The cancel handler already
+        # (no run-comment, no state→Draft PR Ready). The cancel handler already
         # posted its own comment and set the queue job to cancelled.
         if _was_cancelled_during_run(issue_id, run_result):
             logger.info("stage1 — id=%s skipping post-run actions (cancelled)", identifier)
@@ -543,18 +616,19 @@ def orchestrate_start(
             identifier, folder_res, found, downloaded, run_result, delivery_id,
             branch=branch, diff_text=diff_text, shortlog_text=shortlog_text,
             upload_results=upload_results, context_mode=context_mode,
+            workflow_state=workflow_state,
         )
 
         if issue_id:
             linear_api.post_comment(issue_id, body)
-            target_id = _state_id(final_state)
+            target_id = _state_id(target_state)
             if target_id:
                 linear_api.set_issue_state(issue_id, target_id)
-                logger.info("stage1 — id=%s state→%s", identifier, final_state)
+                logger.info("stage1 — id=%s state→%s", identifier, target_state)
             else:
                 logger.warning(
                     "stage1 — id=%s could not move state, %r id missing",
-                    identifier, final_state,
+                    identifier, target_state,
                 )
         else:
             logger.warning("stage1 — id=%s no issue_id, skipped comment+state", identifier)
@@ -770,7 +844,7 @@ def orchestrate_proxy(payload: dict, delivery_id: str | None = None) -> None:
 
 
 def orchestrate_complete(payload: dict, delivery_id: str | None = None) -> None:
-    """Stage 2 — Bastian moved ticket to Done. Merge worktree if one exists, else no-op."""
+    """Stage 2 — BASIC moved ticket to Done. Merge worktree if one exists, else no-op."""
     data = payload.get("data") or {}
     issue_id = data.get("id", "")
     identifier = data.get("identifier", "?")
@@ -804,7 +878,7 @@ def orchestrate_complete(payload: dict, delivery_id: str | None = None) -> None:
         branch = f"ticket/{identifier}"
         base = git_ops.default_branch(repo_path)
 
-        # If main repo's working tree is dirty, refuse to checkout — don't lose Bastian's WIP
+        # If main repo's working tree is dirty, refuse to checkout — don't lose BASIC's WIP
         if not git_ops.working_tree_clean(repo_path):
             body = (
                 f"{HEADER_CONFLICT}\n\nMain repo `{repo_path}` has uncommitted changes "
@@ -814,7 +888,7 @@ def orchestrate_complete(payload: dict, delivery_id: str | None = None) -> None:
             )
             if issue_id:
                 linear_api.post_comment(issue_id, body)
-                rev = _state_id("In Review")
+                rev = _state_id("Draft PR Ready")
                 if rev:
                     linear_api.set_issue_state(issue_id, rev)
             logger.warning("stage2 — id=%s main repo dirty, aborted merge", identifier)
@@ -825,13 +899,13 @@ def orchestrate_complete(payload: dict, delivery_id: str | None = None) -> None:
             body = (
                 f"{HEADER_CONFLICT}\n\nMerge of `{branch}` → `{base}` failed.\n\n"
                 f"```\n{(merge_res.stderr or merge_res.stdout).strip()}\n```\n\n"
-                f"Status rolled back to **In Review** — resolve the conflict in `{repo_path}` "
+                f"Status rolled back to **Draft PR Ready** — resolve the conflict in `{repo_path}` "
                 f"and move to Done again to retry.\n\n"
                 f"---\n_ticket: {identifier} • delivery: {delivery_id or '?'}_"
             )
             if issue_id:
                 linear_api.post_comment(issue_id, body)
-                rev = _state_id("In Review")
+                rev = _state_id("Draft PR Ready")
                 if rev:
                     linear_api.set_issue_state(issue_id, rev)
             logger.warning("stage2 — id=%s merge conflict", identifier)

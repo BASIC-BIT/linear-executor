@@ -21,6 +21,7 @@ from app.cli_registry import (
     AUTH_REGISTRY,
     DEFAULT_CLI,
     AuthMode,
+    ReasoningLevel,
     build_argv,
     resolve_bin,
 )
@@ -125,6 +126,7 @@ def run_cli(
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
     on_start: Optional[Callable[[subprocess.Popen], None]] = None,
     model: Optional[str] = None,
+    reasoning: Optional[ReasoningLevel] = None,
     auth_mode: AuthMode = "oauth",
 ) -> RunResult:
     """Invoke ``cli`` headless in ``cwd`` and return captured output.
@@ -144,7 +146,7 @@ def run_cli(
             logged but do not abort the run.
     """
     cwd.mkdir(parents=True, exist_ok=True)
-    cmd = build_argv(cli, prompt, model=model, auth_mode=auth_mode)
+    cmd = build_argv(cli, prompt, model=model, reasoning=reasoning, auth_mode=auth_mode)
     sub_env = prepare_subprocess_env(cli, auth_mode)
 
     # Log which env vars (if any) we filtered, so debugging "why is OAuth
@@ -158,8 +160,8 @@ def run_cli(
     else:
         filtered_note = "filtered=(n/a)"
     logger.info(
-        "%s subprocess starting — bin=%s cwd=%s timeout=%ds auth=%s %s",
-        cli, cmd[0], cwd, timeout, auth_mode, filtered_note,
+        "%s subprocess starting — bin=%s cwd=%s timeout=%ds auth=%s reasoning=%s %s",
+        cli, cmd[0], cwd, timeout, auth_mode, reasoning or "(default)", filtered_note,
     )
 
     # stdin=DEVNULL: every supported CLI takes the prompt as argv (--print /

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 
@@ -19,6 +20,74 @@ def test_override_in_description_wins():
     r = resolve_folder(data)
     assert r.strategy == "override"
     assert r.path == _expand("~/tmp/special-folder")
+
+
+def _write_product_map(tmp_path, products: dict) -> Path:
+    path = tmp_path / "product-map.local.json"
+    path.write_text(json.dumps({"version": 1, "products": products}), encoding="utf-8")
+    return path
+
+
+def test_product_label_maps_to_target_root(monkeypatch, tmp_path):
+    target = tmp_path / "linear-executor-wt" / "windows-compat"
+    product_map = _write_product_map(
+        tmp_path,
+        {"linear-executor": {"targetRoot": str(target)}},
+    )
+    monkeypatch.setenv("LINEAR_CONTROLLER_PRODUCT_MAP", str(product_map))
+
+    r = resolve_folder({
+        "identifier": "TES-PROD",
+        "description": "No folder override",
+        "labels": [{"name": "product:linear-executor"}],
+    })
+
+    assert r.strategy == "product-map"
+    assert r.path == target.resolve()
+    assert "linear-executor" in r.detail
+
+
+def test_repo_label_maps_to_string_product_entry(monkeypatch, tmp_path):
+    target = tmp_path / "basic-infra-wt" / "cloudflare"
+    product_map = _write_product_map(tmp_path, {"basic-infra": str(target)})
+    monkeypatch.setenv("LINEAR_CONTROLLER_PRODUCT_MAP", str(product_map))
+
+    r = resolve_folder({
+        "identifier": "TES-REPO",
+        "description": "No folder override",
+        "labels": [{"name": "repo:basic-infra"}],
+    })
+
+    assert r.strategy == "product-map"
+    assert r.path == target.resolve()
+
+
+def test_folder_override_beats_product_label(monkeypatch, tmp_path):
+    product_map = _write_product_map(
+        tmp_path,
+        {"linear-executor": {"targetRoot": str(tmp_path / "mapped")}},
+    )
+    monkeypatch.setenv("LINEAR_CONTROLLER_PRODUCT_MAP", str(product_map))
+
+    r = resolve_folder({
+        "identifier": "TES-OVERRIDE-PROD",
+        "description": f"folder: {tmp_path / 'override'}",
+        "labels": [{"name": "product:linear-executor"}],
+    })
+
+    assert r.strategy == "override"
+    assert r.path == (tmp_path / "override").resolve()
+
+
+def test_product_label_without_map_fails_clearly(monkeypatch):
+    monkeypatch.delenv("LINEAR_CONTROLLER_PRODUCT_MAP", raising=False)
+
+    with pytest.raises(ValueError, match="LINEAR_CONTROLLER_PRODUCT_MAP"):
+        resolve_folder({
+            "identifier": "TES-NO-MAP",
+            "description": "No folder override",
+            "labels": [{"name": "product:linear-executor"}],
+        })
 
 
 def test_linear_project_maps_to_known_folder(monkeypatch):

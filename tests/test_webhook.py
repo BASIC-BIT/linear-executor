@@ -84,6 +84,23 @@ def test_webhook_enqueues_start_job_on_ai_implementation_transition(client):
     assert job.identifier == "TES-458"
 
 
+def test_webhook_enqueues_start_job_on_ai_planning_transition(client):
+    c, db_path = client
+    payload = _payload()
+    payload["data"]["state"] = {"name": "AI Planning & Research", "type": "started"}
+    payload["updatedFrom"] = {"stateId": "previous-state-id"}
+    body = json.dumps(payload).encode()
+    sig = _sign(body)
+    r = c.post("/webhook", content=body, headers={"linear-signature": sig})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["stage"] == "stage1"
+    assert data["job_id"] is not None
+    job = q.get_job(db_path, data["job_id"])
+    assert job.kind == "start"
+    assert job.status == "pending"
+
+
 def test_webhook_enqueues_complete_job_on_done_transition(client):
     c, db_path = client
     payload = _payload()
