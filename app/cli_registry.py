@@ -32,10 +32,14 @@ CLI_LABEL_PREFIX = "cli:"
 MODEL_LABEL_PREFIX = "model:"
 TIMEOUT_LABEL_PREFIX = "timeout:"
 AUTH_LABEL_PREFIX = "auth:"
+CONTEXT_LABEL_PREFIX = "context:"
 DEFAULT_CLI = "claude"
 
 AuthMode = Literal["oauth", "apikey"]
 VALID_AUTH_MODES: tuple[AuthMode, ...] = ("oauth", "apikey")
+ContextMode = Literal["fresh", "fork"]
+VALID_CONTEXT_MODES: tuple[ContextMode, ...] = ("fresh", "fork")
+DEFAULT_CONTEXT_MODE: ContextMode = "fresh"
 
 
 # argv prefix per CLI; the prompt is appended as the final element.
@@ -43,18 +47,15 @@ VALID_AUTH_MODES: tuple[AuthMode, ...] = ("oauth", "apikey")
 # (Go-Plan model for OAuth vs provider model for API-key). build_argv()
 # injects the right one from AUTH_REGISTRY when no explicit model is given.
 CLI_REGISTRY: dict[str, list[str]] = {
-    "claude":   ["claude", "--print", "--dangerously-skip-permissions"],
-    "opencode": ["opencode", "run"],
-    # Codex' Sandbox (vendored bubblewrap) braucht User-Namespace
-    # Network-Caps die auf Hostinger-VPS gesperrt sind (RTM_NEWADDR auf
-    # loopback) — `bash` und andere Tools failen damit deterministisch.
-    # Im Executor-Kontext ist die Sandbox auch konzeptionell redundant:
-    # kein Mensch am Terminal, jeder Run lebt in einem Worktree, das
-    # `--dangerously-skip-permissions`-Pendant für Claude ist genau das.
-    # Bypass komplett, sonst ist Codex auf diesem VPS nur Read+Web-Search.
+    "claude":   ["claude", "--print", "--dangerously-skip-permissions", "--no-session-persistence"],
+    "opencode": ["opencode", "run", "--pure"],
+    # Codex exec is the non-interactive path. The dangerous bypass is only
+    # appropriate because the executor already isolates work in a dedicated
+    # worktree and no human is available to answer approval prompts.
     "codex":    ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"],
     "gemini":   ["gemini", "--prompt"],
     "forge":    ["forge", "--prompt"],
+    "echo":     ["python", "-c", "import sys; sys.stdout.buffer.write((' '.join(sys.argv[1:]) + '\\n').encode('utf-8'))"],
 }
 
 
@@ -113,23 +114,26 @@ AUTH_REGISTRY: dict[str, AuthSpec] = {
         # Quota als MiniMax M2.5 (31k/5h vs 6k/5h), 1M context vs 128k, in Reviews
         # mindestens auf Augenhöhe für Standard-Coding-Tasks. Pro-Variante via
         # `model:opencode-go/deepseek-v4-pro`-Label für Heavy-Lifting.
-        default_oauth_model="opencode-go/deepseek-v4-flash",
+        default_oauth_model="opencode/deepseek-v4-flash-free",
         default_apikey_model="openrouter/anthropic/claude-haiku-4.5",
     ),
     # Forge: auth pattern not yet documented in this codebase. Empty spec
     # means no env filtering and no auto-model — fill in when actually used.
     "forge": AuthSpec(),
+    # Echo: used for end-to-end smoke tests — no API keys, no model needed.
+    "echo": AuthSpec(),
 }
 
 # Fallback paths checked when shutil.which() misses — systemd --user
 # services and similar non-login environments often lack ~/.local/bin/
 # and ~/.npm-global/bin/ on PATH.
 _FALLBACK_PATHS: dict[str, list[str]] = {
-    "claude":   ["~/.local/bin/claude"],
+    "claude":   ["~/.local/bin/claude", "~/AppData/Roaming/npm/claude.cmd"],
     "opencode": ["~/.opencode/bin/opencode", "~/.local/bin/opencode"],
-    "codex":    ["~/.npm-global/bin/codex", "~/.local/bin/codex"],
+    "codex":    ["~/.npm-global/bin/codex", "~/.local/bin/codex", "~/AppData/Roaming/npm/codex.cmd"],
     "gemini":   ["~/.npm-global/bin/gemini", "~/.local/bin/gemini"],
     "forge":    ["~/.local/bin/forge"],
+    "echo":     [],  # python is always on PATH via the venv
 }
 
 
@@ -265,6 +269,39 @@ def resolve_auth(labels, cli: str) -> AuthMode:
         )
         return "oauth"
     return spec.default_mode
+
+
+def resolve_context_mode(labels) -> ContextMode:
+    """Pick a worker context mode from ``context:*`` labels.
+
+    V1 intentionally supports only two modes:
+
+    - ``context:fresh``: use the current ticket and human follow-up comments,
+      but do not inherit previous executor output.
+    - ``context:fork``: inject selected previous executor output as background
+      evidence with an explicit role reset.
+
+    Parked/future labels such as ``context:resume`` or ``context:prescribed``
+    fall back to fresh with a warning instead of pretending to work.
+    """
+    context_labels = sorted(
+        n for n in _label_names(labels) if n.startswith(CONTEXT_LABEL_PREFIX)
+    )
+    if not context_labels:
+        return DEFAULT_CONTEXT_MODE
+    if len(context_labels) > 1:
+        logger.warning(
+            "resolve_context_mode — multiple context:* labels %r; picking %r",
+            context_labels, context_labels[0],
+        )
+    chosen = context_labels[0][len(CONTEXT_LABEL_PREFIX):].strip().lower()
+    if chosen in VALID_CONTEXT_MODES:
+        return chosen  # type: ignore[return-value]
+    logger.warning(
+        "resolve_context_mode — unsupported context mode %r; falling back to %r",
+        chosen, DEFAULT_CONTEXT_MODE,
+    )
+    return DEFAULT_CONTEXT_MODE
 
 
 def resolve_timeout(labels) -> int | None:

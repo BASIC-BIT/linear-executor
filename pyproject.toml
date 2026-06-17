@@ -21,3 +21,6 @@ packages = ["app"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "smoke: end-to-end smoke test that runs a real (non-mocked) CLI backend",
+]

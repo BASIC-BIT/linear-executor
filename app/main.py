@@ -17,8 +17,8 @@ from fastapi import FastAPI, HTTPException, Request
 SHARED_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 if SHARED_ENV_PATH.exists():
-    load_dotenv(dotenv_path=SHARED_ENV_PATH, override=False)
-load_dotenv(dotenv_path=ENV_PATH, override=True)
+    load_dotenv(dotenv_path=SHARED_ENV_PATH, override=False, encoding="utf-8-sig")
+load_dotenv(dotenv_path=ENV_PATH, override=True, encoding="utf-8-sig")
 
 from app import job_registry  # noqa: E402
 from app import linear_api  # noqa: E402

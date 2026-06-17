@@ -22,6 +22,7 @@ from pathlib import Path
 from app import job_registry
 from app import linear_api
 from app import queue as q
+from app.runner import terminate_process_tree
 
 
 logger = logging.getLogger("linear-executor")
@@ -38,8 +39,8 @@ def _terminate_with_grace(ticket_id: str, popen) -> None:
     """
     pid = popen.pid
     try:
-        popen.terminate()
-        logger.info("cancel — ticket=%s SIGTERM sent to pid=%d", ticket_id, pid)
+        terminate_process_tree(popen, force=False)
+        logger.info("cancel — ticket=%s terminate sent to process tree pid=%d", ticket_id, pid)
     except Exception as exc:
         logger.warning("cancel — ticket=%s terminate failed: %s", ticket_id, exc)
         return
@@ -53,7 +54,7 @@ def _terminate_with_grace(ticket_id: str, popen) -> None:
             ticket_id, pid, GRACE_BEFORE_KILL_SECONDS,
         )
         try:
-            popen.kill()
+            terminate_process_tree(popen, force=True)
         except Exception as exc:
             logger.error("cancel — ticket=%s SIGKILL failed: %s", ticket_id, exc)
     finally:

@@ -176,7 +176,7 @@ def test_attach_local_file_uploads_and_creates_attachment(tmp_path, monkeypatch)
     """Two sequential GraphQL hops + one PUT to storage. We mock Linear's
     GraphQL transport AND the storage PUT, then verify the orchestration."""
     f = tmp_path / "research.md"
-    f.write_text("# my notes\n", encoding="utf-8")
+    f.write_bytes(b"# my notes\n")
 
     graphql_calls = []
     storage_puts = []

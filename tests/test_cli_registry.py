@@ -1,6 +1,8 @@
 """Unit tests for the cli_registry router (TES-646)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.cli_registry import (
@@ -8,6 +10,7 @@ from app.cli_registry import (
     CLI_REGISTRY,
     DEFAULT_CLI,
     build_argv,
+    resolve_context_mode,
     resolve_cli,
     resolve_timeout,
 )
@@ -57,7 +60,7 @@ def test_build_argv_appends_prompt_for_each_cli():
         argv = build_argv(name, "hello world")
         assert argv[-1] == "hello world"
         # bin path may be expanded — check basename matches the registry's first token.
-        assert argv[0].split("/")[-1] == CLI_REGISTRY[name][0]
+        assert Path(argv[0]).stem.lower() == CLI_REGISTRY[name][0]
         # Static prefix from the registry must appear in order in argv.
         # (build_argv may inject `--model X` from AUTH_REGISTRY defaults
         # in addition to the registry prefix — so argv is a superset.)
@@ -134,6 +137,31 @@ def test_resolve_timeout_caller_responsible_for_clamping():
     assert resolve_timeout(["timeout:99999"]) == 99999
 
 
+# --- resolve_context_mode ----------------------------------------------------
+
+
+def test_resolve_context_mode_defaults_to_fresh():
+    assert resolve_context_mode(None) == "fresh"
+    assert resolve_context_mode([]) == "fresh"
+
+
+def test_resolve_context_mode_parses_fresh_and_fork():
+    assert resolve_context_mode(["context:fresh"]) == "fresh"
+    assert resolve_context_mode([{"name": "context:fork"}]) == "fork"
+
+
+def test_resolve_context_mode_unsupported_falls_back_to_fresh(caplog):
+    with caplog.at_level("WARNING"):
+        assert resolve_context_mode(["context:resume"]) == "fresh"
+    assert "unsupported context mode" in caplog.text
+
+
+def test_resolve_context_mode_multiple_labels_pick_alphabetical_first(caplog):
+    with caplog.at_level("WARNING"):
+        assert resolve_context_mode(["context:fresh", "context:fork"]) == "fork"
+    assert "multiple context:* labels" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Auth resolution (TES-716 follow-up — multi-CLI auth)
 # ---------------------------------------------------------------------------
@@ -187,8 +215,9 @@ def test_resolve_auth_invalid_env_falls_through(monkeypatch):
 
 def test_build_argv_opencode_oauth_picks_go_plan_model():
     argv = build_argv("opencode", "hi", auth_mode="oauth")
+    assert "--pure" in argv
     assert "--model" in argv
-    assert argv[argv.index("--model") + 1] == "opencode-go/deepseek-v4-flash"
+    assert argv[argv.index("--model") + 1] == "opencode/deepseek-v4-flash-free"
 
 
 def test_build_argv_opencode_apikey_picks_provider_model():
@@ -208,3 +237,15 @@ def test_build_argv_claude_no_auto_model_either_mode():
     argv_apikey = build_argv("claude", "hi", auth_mode="apikey")
     assert "--model" not in argv_oauth
     assert "--model" not in argv_apikey
+
+
+def test_build_argv_claude_print_mode_contract():
+    argv = build_argv("claude", "hi", auth_mode="oauth")
+    assert argv[1:3] == ["--print", "--dangerously-skip-permissions"]
+    assert "--no-session-persistence" in argv
+
+
+def test_build_argv_codex_exec_mode_contract():
+    argv = build_argv("codex", "hi", auth_mode="oauth")
+    assert argv[1:3] == ["exec", "--dangerously-bypass-approvals-and-sandbox"]
+    assert argv[-1] == "hi"

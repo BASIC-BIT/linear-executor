@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -26,6 +27,22 @@ from app.cli_registry import (
 
 
 logger = logging.getLogger("linear-executor")
+
+
+def terminate_process_tree(proc: subprocess.Popen, *, force: bool = False) -> None:
+    """Terminate a subprocess and its descendants on both POSIX and Windows."""
+    if os.name == "nt":
+        cmd = ["taskkill", "/PID", str(proc.pid), "/T"]
+        if force:
+            cmd.append("/F")
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        return
+
+    sig = signal.SIGKILL if force else signal.SIGTERM
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        pass
 
 
 def prepare_subprocess_env(cli: str, auth_mode: AuthMode) -> dict[str, str]:
@@ -158,6 +175,8 @@ def run_cli(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         start_new_session=True,
         env=sub_env,
     )
@@ -176,7 +195,7 @@ def run_cli(
             cli, timeout,
         )
         try:
-            proc.kill()
+            terminate_process_tree(proc, force=True)
             stdout, stderr = proc.communicate(timeout=5)
         except Exception:
             stdout, stderr = "", f"TIMEOUT after {timeout}s (kill failed)"

@@ -131,6 +131,24 @@ def test_stage1_prompt_carries_progress_instructions_with_issue_id(monkeypatch, 
     assert "save_comment" in prompt
 
 
+def test_stage1_non_claude_prompt_omits_claude_linear_mcp_progress(monkeypatch, patched_orchestrator):
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
+        captured["cli"] = cli
+        captured["prompt"] = prompt
+        return runner_mod.RunResult(0, "ok", "", False, cli=cli)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    payload = _payload(identifier="TES-OPENCODE", issue_id="iss-opencode")
+    payload["data"]["labels"] = [{"name": "cli:opencode"}]
+    orchestrator.orchestrate_start(payload, delivery_id="d-opencode")
+
+    assert captured["cli"] == "opencode"
+    assert "Progress updates" not in captured["prompt"]
+    assert "mcp__claude_ai_Linear__save_comment" not in captured["prompt"]
+
+
 def test_proxy_prompt_carries_progress_instructions(monkeypatch, patched_orchestrator, tmp_path):
     monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
     monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", lambda *a, **kw: "att-x")
@@ -148,6 +166,26 @@ def test_proxy_prompt_carries_progress_instructions(monkeypatch, patched_orchest
     prompt = captured["prompt"]
     assert "Progress updates" in prompt
     assert "iss-pxp" in prompt
+
+
+def test_proxy_non_claude_prompt_omits_claude_linear_mcp_progress(monkeypatch, patched_orchestrator, tmp_path):
+    monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
+        captured["cli"] = cli
+        captured["prompt"] = prompt
+        cwd.mkdir(parents=True, exist_ok=True)
+        return runner_mod.RunResult(0, "ok", "", False, cli=cli)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-PX-CODEX", issue_id="iss-codex", project_name="⚡ Ad-hoc AI Proxy")
+    p["data"]["labels"] = [{"name": "cli:codex"}]
+    orchestrator.orchestrate_proxy(p, delivery_id="px-codex")
+
+    assert captured["cli"] == "codex"
+    assert "Progress updates" not in captured["prompt"]
+    assert "mcp__claude_ai_Linear__save_comment" not in captured["prompt"]
 
 
 def test_progress_comments_excluded_from_followup_context(monkeypatch, patched_orchestrator):
@@ -215,6 +253,42 @@ def test_stage1_appends_nonexecutor_comments_as_follow_up_context(monkeypatch, p
     assert "And retry with timeout 30s" in prompt
     # Own executor comments must be filtered out
     assert "Output from last run" not in prompt
+    assert "Inherited Context (context:fork)" not in prompt
+
+
+def test_stage1_context_fork_inherits_previous_executor_output(monkeypatch, patched_orchestrator):
+    patched_orchestrator["_comments_to_return"] = [
+        Comment(
+            id="c1",
+            body="\U0001f916 **Linear-Executor** — Coding Agent Run\n\nprevious executor sentinel",
+            created_at="2026-06-17T16:00:00Z",
+            author_name="Linear-Executor",
+            is_executor_comment=True,
+        ),
+        Comment(
+            id="c2",
+            body="human follow-up sentinel",
+            created_at="2026-06-17T16:05:00Z",
+            author_name="Bastian",
+            is_executor_comment=False,
+        ),
+    ]
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
+        captured["prompt"] = prompt
+        return runner_mod.RunResult(0, "ok", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    payload = _payload(identifier="TES-FORK")
+    payload["data"]["labels"] = [{"name": "context:fork"}]
+    orchestrator.orchestrate_start(payload, delivery_id="d-fork")
+
+    prompt = captured["prompt"]
+    assert "Inherited Context (context:fork)" in prompt
+    assert "You are a fork of previous executor work" in prompt
+    assert "previous executor sentinel" in prompt
+    assert "human follow-up sentinel" in prompt
 
 
 def test_stage1_without_follow_up_comments_omits_section(monkeypatch, patched_orchestrator):
@@ -255,6 +329,32 @@ def test_proxy_appends_nonexecutor_comments_as_follow_up_context(monkeypatch, pa
 
     assert "Follow-up Instructions" in captured["prompt"]
     assert "auf Deutsch zusammenfassen" in captured["prompt"]
+
+
+def test_proxy_context_fork_inherits_previous_executor_output(monkeypatch, patched_orchestrator, tmp_path):
+    monkeypatch.setattr("app.orchestrator.PROXY_BASE", tmp_path / "proxy-base")
+    patched_orchestrator["_comments_to_return"] = [
+        Comment(
+            id="c1",
+            body="\U0001f916 **Linear-Executor** — Coding Agent Run\n\nproxy inherited sentinel",
+            created_at="2026-06-17T16:10:00Z",
+            author_name="Linear-Executor",
+            is_executor_comment=True,
+        ),
+    ]
+    captured = {}
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
+        captured["prompt"] = prompt
+        return runner_mod.RunResult(0, "ok", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-PROXY-FORK", project_name="⚡ Ad-hoc AI Proxy")
+    p["data"]["labels"] = [{"name": "context:fork"}]
+    orchestrator.orchestrate_proxy(p, delivery_id="px-fork")
+
+    assert "Inherited Context (context:fork)" in captured["prompt"]
+    assert "proxy inherited sentinel" in captured["prompt"]
 
 
 def test_stage1_without_issue_id_skips_comment_and_state(patched_orchestrator):
@@ -559,7 +659,7 @@ def test_proxy_includes_attachments_in_prompt(monkeypatch, patched_orchestrator,
     orchestrator.orchestrate_proxy(p, delivery_id="px-2")
 
     # Attachments dir mentioned in prompt so Claude can find them
-    assert "TES-PROXY-2/attachments" in captured_prompt["value"]
+    assert "TES-PROXY-2/attachments" in captured_prompt["value"].replace("\\", "/")
 
 
 def test_proxy_posts_error_and_reraises(monkeypatch, patched_orchestrator, tmp_path):

@@ -38,7 +38,7 @@ from app import job_registry
 from app import linear_api
 from app import queue as q
 from app import runner
-from app.cli_registry import resolve_auth, resolve_cli, resolve_model, resolve_timeout
+from app.cli_registry import resolve_auth, resolve_cli, resolve_context_mode, resolve_model, resolve_timeout
 from app.folders import resolve_folder
 
 
@@ -53,6 +53,8 @@ HEADER_PROXY = "⚡ **Linear-Executor** — Ad-hoc AI Proxy"
 HEADER_CANCELLED = "⏸ **Linear-Executor** — Run Cancelled"
 
 MAX_OUTPUT_CHARS = 25_000
+MAX_INHERITED_CONTEXT_CHARS = 12_000
+MAX_INHERITED_COMMENT_CHARS = 6_000
 
 # Linear team UUID. Required for state-id lookups (Backlog / Todo / AI
 # Implementation / In Review / Done). Set LINEAR_TEAM_ID in .env to your
@@ -176,6 +178,76 @@ def _format_followup_comments(comments: list[linear_api.Comment] | None) -> list
     return lines
 
 
+def _prompt_truncate(s: str, limit: int) -> str:
+    if len(s) <= limit:
+        return s
+    return s[:limit] + f"\n\n...[truncated, {len(s) - limit} more chars]"
+
+
+def _is_inheritable_executor_comment(comment: linear_api.Comment) -> bool:
+    """True for previous executor result comments worth feeding to forked runs."""
+    if not comment.is_executor_comment:
+        return False
+    body = (comment.body or "").lstrip()
+    return (
+        body.startswith("\U0001f916 **Linear-Executor**")
+        or body.startswith(HEADER_PROXY)
+        or body.startswith("⚠ Linear-Executor")
+    )
+
+
+def _format_inherited_context(
+    comments: list[linear_api.Comment] | None,
+    context_mode: str,
+) -> list[str]:
+    """Render selected previous executor output for ``context:fork``.
+
+    ``context:fresh`` deliberately keeps the older behavior: the worker sees
+    the ticket, attachments, and human follow-up comments, but not prior agent
+    output. ``context:fork`` includes previous run/proxy output as background
+    evidence with a role reset so the worker does not continue the old task by
+    accident.
+    """
+    if context_mode != "fork" or not comments:
+        return []
+
+    relevant = [c for c in comments if _is_inheritable_executor_comment(c)]
+    if not relevant:
+        return []
+
+    lines = [
+        "",
+        "---",
+        "Inherited Context (context:fork)",
+        "",
+        "You are a fork of previous executor work on this Linear ticket. The inherited output below is background evidence only. Your current task is still the ticket description and any human follow-up instructions. If inherited context conflicts with current instructions, follow the current instructions.",
+        "",
+    ]
+    used = 0
+    for c in relevant:
+        who = c.author_name or "Linear-Executor"
+        stamp = (c.created_at or "").replace("T", " ").rstrip("Z")
+        body = _prompt_truncate(c.body.rstrip(), MAX_INHERITED_COMMENT_CHARS)
+        rendered = f"Previous executor output — {who} · {stamp}\n{body}\n"
+        remaining = MAX_INHERITED_CONTEXT_CHARS - used
+        if remaining <= 0:
+            lines.append("...[additional inherited executor output omitted]")
+            break
+        if len(rendered) > remaining:
+            rendered = _prompt_truncate(rendered, remaining)
+            lines.append(rendered.rstrip())
+            break
+        lines.append(rendered.rstrip())
+        lines.append("")
+        used += len(rendered)
+    return lines
+
+
+def _supports_linear_progress(cli: str) -> bool:
+    """Whether this backend can use the Claude-style Linear MCP tool name."""
+    return cli == "claude"
+
+
 def _build_prompt(
     data: dict,
     *,
@@ -184,6 +256,8 @@ def _build_prompt(
     in_git: bool,
     branch: str | None,
     comments: list[linear_api.Comment] | None = None,
+    cli: str = "claude",
+    context_mode: str = "fresh",
 ) -> str:
     title = data.get("title", "")
     description = data.get("description", "") or ""
@@ -204,13 +278,14 @@ def _build_prompt(
         parts.append(f"Attachments referenced by this ticket are in: {attachments_dir}")
         parts.append("(Read them as context but don't commit them.)")
         parts.append("")
-    if issue_id:
+    if issue_id and _supports_linear_progress(cli):
         parts.append(PROGRESS_INSTRUCTIONS.replace("{issue_id}", issue_id))
         parts.append("")
     parts.append("---")
     parts.append("Ticket description follows:")
     parts.append("")
     parts.append(description)
+    parts.extend(_format_inherited_context(comments, context_mode))
     parts.extend(_format_followup_comments(comments))
     parts.append("")
     parts.append("Complete the work above. Your final reply will be posted as a "
@@ -231,12 +306,14 @@ def _compose_run_comment(
     diff_text: str | None = None,
     shortlog_text: str | None = None,
     upload_results: list[tuple[Path, str | None, str | None]] | None = None,
+    context_mode: str = "fresh",
 ) -> str:
     lines: list[str] = [HEADER_RUN, ""]
 
     lines.append("**Folder**")
     lines.append(f"- strategy: `{folder_res.strategy}`")
     lines.append(f"- path: `{folder_res.path}`")
+    lines.append(f"- context: `{context_mode}`")
     if branch:
         lines.append(f"- branch: `{branch}`")
     lines.append("")
@@ -408,17 +485,19 @@ def orchestrate_start(
         if followup_count:
             logger.info("stage1 — id=%s attaching %d follow-up comment(s) to prompt", identifier, followup_count)
 
-        prompt = _build_prompt(
-            data, cwd=cwd, attachments_dir=attachments_dir,
-            in_git=is_git, branch=branch, comments=comments,
-        )
         cli = resolve_cli(data.get("labels"))
         model = resolve_model(data.get("labels"))
         auth_mode = resolve_auth(data.get("labels"), cli)
+        context_mode = resolve_context_mode(data.get("labels"))
+        prompt = _build_prompt(
+            data, cwd=cwd, attachments_dir=attachments_dir,
+            in_git=is_git, branch=branch, comments=comments, cli=cli,
+            context_mode=context_mode,
+        )
         timeout = _pick_timeout(data.get("labels"), runner.DEFAULT_TIMEOUT_STAGE1, identifier)
         logger.info(
-            "stage1 — id=%s backend=%s auth=%s model=%s timeout=%ds",
-            identifier, cli, auth_mode, model or "(default)", timeout,
+            "stage1 — id=%s backend=%s auth=%s context=%s model=%s timeout=%ds",
+            identifier, cli, auth_mode, context_mode, model or "(default)", timeout,
         )
         files_before = _snapshot_files(cwd)
         try:
@@ -463,7 +542,7 @@ def orchestrate_start(
         body = _compose_run_comment(
             identifier, folder_res, found, downloaded, run_result, delivery_id,
             branch=branch, diff_text=diff_text, shortlog_text=shortlog_text,
-            upload_results=upload_results,
+            upload_results=upload_results, context_mode=context_mode,
         )
 
         if issue_id:
@@ -592,28 +671,30 @@ def orchestrate_proxy(payload: dict, delivery_id: str | None = None) -> None:
             followup_count = sum(1 for c in comments if not c.is_executor_comment and (c.body or "").strip())
             logger.info("proxy — id=%s attaching %d follow-up comment(s) to prompt", identifier, followup_count)
 
+        cli = resolve_cli(data.get("labels"))
+        context_mode = resolve_context_mode(data.get("labels"))
         progress_block = (
             "\n" + PROGRESS_INSTRUCTIONS.replace("{issue_id}", issue_id) + "\n"
-            if issue_id else ""
+            if issue_id and _supports_linear_progress(cli) else ""
         )
-
+        inherited_block = "\n".join(_format_inherited_context(comments, context_mode))
         prompt = (
             f"Linear ticket {identifier}: {title}\n\n"
             f"{description}\n"
             f"{attachment_hint}"
             f"{progress_block}"
+            f"{inherited_block}\n"
             f"{followup_block}\n"
             f"Please answer or perform the task above. Your response will be "
             f"posted as a Linear comment on this ticket."
         )
 
-        cli = resolve_cli(data.get("labels"))
         model = resolve_model(data.get("labels"))
         auth_mode = resolve_auth(data.get("labels"), cli)
         timeout = _pick_timeout(data.get("labels"), runner.DEFAULT_TIMEOUT_PROXY, identifier)
         logger.info(
-            "proxy — id=%s backend=%s auth=%s model=%s timeout=%ds",
-            identifier, cli, auth_mode, model or "(default)", timeout,
+            "proxy — id=%s backend=%s auth=%s context=%s model=%s timeout=%ds",
+            identifier, cli, auth_mode, context_mode, model or "(default)", timeout,
         )
         files_before = _snapshot_files(cwd)
         try:
@@ -637,7 +718,12 @@ def orchestrate_proxy(payload: dict, delivery_id: str | None = None) -> None:
         if new_files and issue_id:
             attach_results = _attach_files_to_issue(issue_id, identifier, new_files)
 
-        lines = [HEADER_PROXY, "", f"_backend: `{run_result.cli}`_", ""]
+        lines = [
+            HEADER_PROXY,
+            "",
+            f"_backend: `{run_result.cli}` • context: `{context_mode}`_",
+            "",
+        ]
         if run_result.timed_out:
             lines.append(f"⏱ timed out after {run_result.timeout_used}s")
         elif run_result.exit_code != 0:
@@ -671,7 +757,7 @@ def orchestrate_proxy(payload: dict, delivery_id: str | None = None) -> None:
             done_id = _state_id("Done")
             if done_id:
                 linear_api.set_issue_state(issue_id, done_id)
-                logger.info("proxy — id=%s state→Done", identifier)
+                logger.info("proxy — id=%s state->Done", identifier)
 
     except Exception as exc:
         logger.error("proxy FAILED for %s: %s\n%s", identifier, exc, traceback.format_exc())
