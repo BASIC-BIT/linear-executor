@@ -114,7 +114,7 @@ def test_worker_retries_on_exception_then_fails(db, monkeypatch):
 
 def test_final_failure_posts_linear_comment_and_resets_state(db, monkeypatch):
     """After max_retries are exhausted, the worker tells Linear about it
-    and bounces the ticket back to Todo so it doesn't hang on AI Impl. (TES-606)"""
+    and moves the ticket to Human Input Needed so it doesn't hang on an AI lane."""
     posted = []
     state_changes = []
 
@@ -157,7 +157,8 @@ def test_final_failure_posts_linear_comment_and_resets_state(db, monkeypatch):
     assert "Final Failure" in body
     assert "permanent failure" in body
 
-    assert state_changes == [("iss-fail", "state-Todo")]
+    assert "Human Input Needed" in body
+    assert state_changes == [("iss-fail", "state-Human Input Needed")]
 
 
 def test_final_failure_swallows_linear_errors(db, monkeypatch):

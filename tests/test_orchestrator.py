@@ -141,6 +141,40 @@ def test_stage1_posts_error_comment_and_reraises(monkeypatch, patched_orchestrat
     assert "failed" in patched_orchestrator["comments"][0]["body"].lower()
 
 
+def test_stage1_backend_nonzero_does_not_advance_state(monkeypatch, patched_orchestrator):
+    from app import runner as runner_mod
+
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
+        return runner_mod.RunResult(2, "", "backend exploded", False, cli=cli)
+
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    with pytest.raises(RuntimeError, match="exited with code 2"):
+        orchestrator.orchestrate_start(_payload(identifier="TES-NONZERO"), delivery_id="d-nonzero")
+
+    assert patched_orchestrator["state_changes"] == []
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "backend exploded" in body
+
+
+def test_stage1_opencode_permission_auto_reject_does_not_advance_state(monkeypatch, patched_orchestrator):
+    from app import runner as runner_mod
+
+    stderr = "permission requested: external_directory (D:\\*); auto-rejecting\nThe user rejected permission"
+
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
+        return runner_mod.RunResult(0, "", stderr, False, cli="opencode")
+
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    with pytest.raises(RuntimeError, match="auto-rejected permission"):
+        orchestrator.orchestrate_start(_payload(identifier="TES-PERM"), delivery_id="d-perm")
+
+    assert patched_orchestrator["state_changes"] == []
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "external_directory" in body
+
+
 def test_stage1_prompt_carries_progress_instructions_with_issue_id(monkeypatch, patched_orchestrator):
     """Claude needs to know it should post 🔄 progress lines and which Linear issue to post against. (TES-608)"""
     captured = {}
@@ -971,7 +1005,7 @@ def test_invalid_timeout_label_falls_back_to_default(monkeypatch, patched_orches
 
 
 def test_timeout_message_uses_actual_value_not_module_constant(monkeypatch, patched_orchestrator):
-    """The Linear timeout-comment must show the timeout the run actually got
+    """The Linear failure comment must show the timeout the run actually got
     (not runner.DEFAULT_TIMEOUT_SECONDS, which would lie when a label override
     bumped or shortened the run)."""
     from app import runner as runner_mod
@@ -984,6 +1018,8 @@ def test_timeout_message_uses_actual_value_not_module_constant(monkeypatch, patc
 
     p = _payload(identifier="TES-MSG-TO")
     p["data"]["labels"] = [{"name": "timeout:42"}]
-    orchestrator.orchestrate_start(p, delivery_id="d")
+    with pytest.raises(RuntimeError, match="timed out after 42s"):
+        orchestrator.orchestrate_start(p, delivery_id="d")
     bodies = [c["body"] for c in patched_orchestrator["comments"]]
     assert any("timed out after 42s" in b for b in bodies), bodies
+    assert patched_orchestrator["state_changes"] == []

@@ -36,8 +36,8 @@ logger = logging.getLogger("linear-executor")
 def _notify_final_failure(job: q.Job, exc: Exception) -> None:
     """When a job has exhausted retries, tell Linear about it.
 
-    Posts a Linear comment with the last error and bounces the ticket back
-    to ``Todo`` so the hung ``AI Implementation`` state is cleared. Best
+    Posts a Linear comment with the last error and moves the ticket to
+    ``Human Input Needed`` so the hung AI-active state is cleared. Best
     effort — any failure here is logged and swallowed (don't break the
     worker over a follow-up call).
     """
@@ -48,19 +48,22 @@ def _notify_final_failure(job: q.Job, exc: Exception) -> None:
         f"Job failed after {job.max_retries + 1} attempts "
         f"({job.max_retries} retries).\n\n"
         f"Last error:\n```\n{str(exc)[:1500]}\n```\n\n"
-        f"Status reset to **Todo** — fix the ticket (or its references) "
-        f"and re-trigger by moving back to **AI Implementation**."
+        f"Status moved to **Human Input Needed** — fix the ticket, runtime, "
+        f"or references, then re-trigger by moving back to an AI lane."
     )
     try:
         linear_api.post_comment(job.ticket_id, body)
     except Exception:
         logger.exception("worker could not post final-failure comment for %s", job.identifier)
     try:
-        todo_id = linear_api.fetch_workflow_state_id(TEAM_ID, "Todo")
-        if todo_id:
-            linear_api.set_issue_state(job.ticket_id, todo_id)
+        human_input_id = linear_api.fetch_workflow_state_id(TEAM_ID, "Human Input Needed")
+        if human_input_id:
+            linear_api.set_issue_state(job.ticket_id, human_input_id)
         else:
-            logger.warning("worker — could not resolve 'Todo' state id, leaving ticket in flight")
+            logger.warning(
+                "worker — could not resolve 'Human Input Needed' state id, "
+                "leaving ticket in flight"
+            )
     except Exception:
         logger.exception("worker could not reset ticket state for %s", job.identifier)
 

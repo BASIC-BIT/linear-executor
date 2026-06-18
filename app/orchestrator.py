@@ -573,6 +573,36 @@ def _was_cancelled_during_run(issue_id: str | None, run_result) -> bool:
     return run_result.exit_code in (-15, 143, -9, 137)
 
 
+def _backend_failure_reason(run_result: runner.RunResult) -> str | None:
+    """Return a concise failure reason for backend runs that should not advance.
+
+    Some CLIs can print a permission failure and still exit 0, so we also look
+    for OpenCode's non-interactive auto-reject wording.
+    """
+    combined = "\n".join([run_result.stdout or "", run_result.stderr or ""])
+    if run_result.timed_out:
+        return f"{run_result.cli} timed out after {run_result.timeout_used}s"
+    if run_result.exit_code != 0:
+        return f"{run_result.cli} exited with code {run_result.exit_code}"
+    lowered = combined.lower()
+    if "permission requested:" in lowered and "auto-rejecting" in lowered:
+        return f"{run_result.cli} hit an auto-rejected permission request"
+    if "the user rejected permission" in lowered:
+        return f"{run_result.cli} reported a rejected permission request"
+    return None
+
+
+def _format_backend_failure(reason: str, run_result: runner.RunResult) -> str:
+    details = "\n".join(
+        part.strip()
+        for part in (run_result.stderr, run_result.stdout)
+        if part and part.strip()
+    )
+    if not details:
+        return reason
+    return f"{reason}\n\n{_truncate(details, limit=1500)}"
+
+
 def _cleanup_empty_ticket_dir(identifier: str) -> None:
     """Remove TICKETS_BASE/<id>/ if it contains no actual files (recursively).
 
@@ -685,6 +715,10 @@ def orchestrate_start(
         if _was_cancelled_during_run(issue_id, run_result):
             logger.info("stage1 — id=%s skipping post-run actions (cancelled)", identifier)
             return
+
+        failure_reason = _backend_failure_reason(run_result)
+        if failure_reason is not None:
+            raise RuntimeError(_format_backend_failure(failure_reason, run_result))
 
         diff_text: str | None = None
         shortlog_text: str | None = None
