@@ -7,7 +7,7 @@ orchestrator entry point. Survives process restarts (WAL mode, atomic picks).
 Schema
 ------
 ``jobs(id, ticket_id, identifier, delivery_id, kind, payload_json,
-       status, retries, max_retries, last_error,
+       status, retries, max_retries, last_error, status_comment_id,
        created_at, started_at, completed_at)``
 
 Statuses: ``pending`` → ``running`` → ``done | failed | cancelled``. A
@@ -22,13 +22,17 @@ from pathlib import Path
 from typing import Any
 
 
-_SCHEMA = """
+VALID_JOB_KINDS = ("start", "proxy", "complete", "review_watch")
+_KIND_CHECK = ", ".join(f"'{kind}'" for kind in VALID_JOB_KINDS)
+
+
+_CREATE_TABLE = f"""
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticket_id TEXT NOT NULL,
     identifier TEXT NOT NULL,
     delivery_id TEXT,
-    kind TEXT NOT NULL CHECK(kind IN ('start', 'proxy', 'complete', 'batch')),
+    kind TEXT NOT NULL CHECK(kind IN ({_KIND_CHECK})),
     payload_json TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK(status IN ('pending', 'running', 'done', 'failed', 'cancelled')),
@@ -40,9 +44,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at TEXT,
     completed_at TEXT
 );
+"""
+
+_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_ticket ON jobs(ticket_id);
 """
+
+_SCHEMA = _CREATE_TABLE + _INDEXES
 
 _MIGRATIONS = (
     "ALTER TABLE jobs ADD COLUMN status_comment_id TEXT",
@@ -88,6 +97,42 @@ def init_db(db_path: Path) -> None:
                 conn.execute(stmt)
             except sqlite3.OperationalError:
                 pass  # column already exists
+        _migrate_job_kind_check(conn)
+
+
+def _migrate_job_kind_check(conn: sqlite3.Connection) -> None:
+    """Rebuild legacy queue tables whose kind CHECK lacks ``review_watch``.
+
+    SQLite cannot ALTER a CHECK constraint in place. Existing installs may
+    still allow the removed ``batch`` kind but reject the new review-watch
+    trigger, so rebuild the table once while preserving queued history.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'"
+    ).fetchone()
+    sql = (row["sql"] if row else "") or ""
+    if "review_watch" in sql:
+        return
+
+    conn.execute("ALTER TABLE jobs RENAME TO jobs_legacy")
+    conn.execute(_CREATE_TABLE.replace("IF NOT EXISTS ", ""))
+    conn.execute(
+        """
+        INSERT INTO jobs (
+            id, ticket_id, identifier, delivery_id, kind, payload_json, status,
+            retries, max_retries, last_error, status_comment_id, created_at,
+            started_at, completed_at
+        )
+        SELECT
+            id, ticket_id, identifier, delivery_id,
+            CASE WHEN kind = 'batch' THEN 'start' ELSE kind END,
+            payload_json, status, retries, max_retries, last_error,
+            status_comment_id, created_at, started_at, completed_at
+        FROM jobs_legacy
+        """
+    )
+    conn.execute("DROP TABLE jobs_legacy")
+    conn.executescript(_INDEXES)
 
 
 def _row_to_job(row: sqlite3.Row) -> Job:
@@ -118,7 +163,7 @@ def enqueue(
     delivery_id: str | None,
     max_retries: int = 3,
 ) -> int:
-    if kind not in ("start", "proxy", "complete", "batch"):
+    if kind not in VALID_JOB_KINDS:
         raise ValueError(f"unknown kind: {kind!r}")
     data = payload.get("data") or {}
     ticket_id = data.get("id") or ""

@@ -2,6 +2,7 @@ from app.filter import (
     PROXY_PROJECT_ID,
     is_proxy_ticket,
     should_complete_review,
+    should_start_review_watch,
     should_start_execution,
     should_trigger,
 )
@@ -137,3 +138,15 @@ def test_should_complete_review_still_fires_for_non_proxy_done():
     p["data"]["state"] = {"name": "Done"}
     # base payload has no project field — non-proxy by default
     assert should_complete_review(p) is True
+
+
+def test_should_start_review_watch_triggers_on_ai_review_watch_transition():
+    p = _base_payload()
+    p["data"]["state"] = {"name": "AI Review Watch", "type": "started"}
+    assert should_start_review_watch(p) is True
+
+
+def test_should_start_review_watch_ignores_description_edits():
+    p = _base_payload(updatedFrom={"description": "old"})
+    p["data"]["state"] = {"name": "AI Review Watch", "type": "started"}
+    assert should_start_review_watch(p) is False

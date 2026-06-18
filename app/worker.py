@@ -21,7 +21,13 @@ from pathlib import Path
 
 from app import linear_api
 from app import queue as q
-from app.orchestrator import TEAM_ID, orchestrate_complete, orchestrate_proxy, orchestrate_start
+from app.orchestrator import (
+    TEAM_ID,
+    orchestrate_complete,
+    orchestrate_proxy,
+    orchestrate_review_watch,
+    orchestrate_start,
+)
 
 
 logger = logging.getLogger("linear-executor")
@@ -67,6 +73,8 @@ def _dispatch(job: q.Job) -> None:
         orchestrate_proxy(payload, delivery_id=job.delivery_id)
     elif job.kind == "complete":
         orchestrate_complete(payload, delivery_id=job.delivery_id)
+    elif job.kind == "review_watch":
+        orchestrate_review_watch(payload, delivery_id=job.delivery_id)
     else:
         raise ValueError(f"unknown job kind: {job.kind!r}")
 

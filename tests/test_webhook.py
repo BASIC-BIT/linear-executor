@@ -116,6 +116,23 @@ def test_webhook_enqueues_complete_job_on_done_transition(client):
     assert job.kind == "complete"
 
 
+def test_webhook_enqueues_review_watch_job_on_ai_review_watch_transition(client):
+    c, db_path = client
+    payload = _payload()
+    payload["data"]["state"] = {"name": "AI Review Watch", "type": "started"}
+    payload["updatedFrom"] = {"stateId": "previous-state-id"}
+    body = json.dumps(payload).encode()
+    sig = _sign(body)
+
+    r = c.post("/webhook", content=body, headers={"linear-signature": sig})
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["stage"] == "review_watch"
+    job = q.get_job(db_path, data["job_id"])
+    assert job.kind == "review_watch"
+
+
 def test_webhook_enqueues_proxy_job_for_proxy_project(client):
     c, db_path = client
     from app.filter import PROXY_PROJECT_ID

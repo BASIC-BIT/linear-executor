@@ -27,6 +27,7 @@ from app.filter import (  # noqa: E402
     is_proxy_ticket,
     should_cancel_run,
     should_complete_review,
+    should_start_review_watch,
     should_start_execution,
 )
 from app.signature import verify_signature  # noqa: E402
@@ -171,6 +172,14 @@ def create_app() -> FastAPI:
                 "CANCELLED — id=%s cancelled_jobs=%d had_running=%s delivery=%s",
                 identifier, result["cancelled_jobs"], result["had_running_process"], delivery_id,
             )
+        elif should_start_review_watch(payload):
+            stage = "review_watch"
+            job_id = q.enqueue(db_path, kind="review_watch", payload=payload, delivery_id=delivery_id)
+            logger.info(
+                "ENQUEUED REVIEW_WATCH — id=%s state=%s delivery=%s job=%d",
+                identifier, state_name, delivery_id, job_id,
+            )
+            _post_status_comment(db_path, data.get("id"), job_id, stage, identifier, logger)
         elif should_complete_review(payload):
             stage = "stage2"
             job_id = q.enqueue(db_path, kind="complete", payload=payload, delivery_id=delivery_id)

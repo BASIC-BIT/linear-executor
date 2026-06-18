@@ -1,5 +1,6 @@
 """Tests for the SQLite-backed job queue (app/queue.py)."""
 import json
+import sqlite3
 
 import pytest
 
@@ -36,6 +37,62 @@ def test_enqueue_creates_pending_job(db):
     assert job.delivery_id == "d-1"
     assert job.retries == 0
     assert json.loads(job.payload_json)["data"]["identifier"] == "TES-700"
+
+
+def test_enqueue_accepts_review_watch_job(db):
+    job_id = q.enqueue(db, kind="review_watch", payload=_sample_payload("TES-RW"), delivery_id="rw-1")
+    job = q.get_job(db, job_id)
+    assert job.kind == "review_watch"
+    assert job.status == "pending"
+
+
+def test_init_db_migrates_legacy_kind_check(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    payload = json.dumps(_sample_payload("TES-LEGACY"))
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT NOT NULL,
+                identifier TEXT NOT NULL,
+                delivery_id TEXT,
+                kind TEXT NOT NULL CHECK(kind IN ('start', 'proxy', 'complete', 'batch')),
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'running', 'done', 'failed', 'cancelled')),
+                retries INTEGER NOT NULL DEFAULT 0,
+                max_retries INTEGER NOT NULL DEFAULT 3,
+                last_error TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                started_at TEXT,
+                completed_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO jobs (
+                ticket_id, identifier, delivery_id, kind, payload_json, status
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("issue-legacy", "TES-LEGACY", "d-legacy", "batch", payload, "pending"),
+        )
+
+    q.init_db(db_path)
+
+    migrated = q.get_job(db_path, 1)
+    assert migrated.kind == "start"
+    assert migrated.status_comment_id is None
+
+    review_watch_id = q.enqueue(
+        db_path,
+        kind="review_watch",
+        payload=_sample_payload("TES-REVIEW", issue_id="issue-review"),
+        delivery_id="d-review",
+    )
+    assert q.get_job(db_path, review_watch_id).kind == "review_watch"
 
 
 def test_pick_next_pending_returns_oldest_and_flips_to_running(db):

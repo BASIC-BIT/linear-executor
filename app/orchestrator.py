@@ -28,8 +28,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
+import subprocess
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 
 from app import attachments as attachments_mod
@@ -59,6 +62,7 @@ HEADER_MERGE = "🔀 **Linear-Executor** — Merged"
 HEADER_CONFLICT = "⚠ **Linear-Executor** — Merge Conflict"
 HEADER_PROXY = "⚡ **Linear-Executor** — Ad-hoc AI Proxy"
 HEADER_CANCELLED = "⏸ **Linear-Executor** — Run Cancelled"
+HEADER_REVIEW_WATCH = "👀 **Linear-Executor** — Review Watch"
 
 MAX_OUTPUT_CHARS = 25_000
 MAX_INHERITED_CONTEXT_CHARS = 12_000
@@ -74,6 +78,20 @@ STATE_PROMPT_FILES = {
     "AI Planning & Research": "ai-planning-research.md",
     "AI Implementation": "ai-implementation.md",
 }
+
+GITHUB_PR_RE = re.compile(
+    r"https?://github\.com/(?P<owner>[^/\s)>'\"]+)/(?P<repo>[^/\s)>'\"]+)/pull/(?P<number>\d+)"
+)
+LINEAR_REVIEW_PR_RE = re.compile(
+    r"https?://linear\.review/(?P<owner>[^/\s)>'\"]+)/(?P<repo>[^/\s)>'\"]+)/pull/(?P<number>\d+)"
+)
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    exit_code: int
+    stdout: str
+    stderr: str
 
 # Linear team UUID. Required for state-id lookups (Backlog / Todo / AI
 # Implementation / Draft PR Ready / Done). Set LINEAR_TEAM_ID in .env to your
@@ -113,6 +131,83 @@ def _truncate(s: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     if len(s) <= limit:
         return s
     return s[:limit] + f"\n\n…[truncated, {len(s) - limit} more chars]"
+
+
+def _extract_github_pr_url(text: str | None) -> str | None:
+    if not text:
+        return None
+    match = GITHUB_PR_RE.search(text)
+    if match:
+        return match.group(0)
+    match = LINEAR_REVIEW_PR_RE.search(text)
+    if match:
+        return (
+            f"https://github.com/{match.group('owner')}/"
+            f"{match.group('repo')}/pull/{match.group('number')}"
+        )
+    return None
+
+
+def _find_github_pr_url(
+    data: dict,
+    attachments: list[linear_api.Attachment],
+    comments: list[linear_api.Comment],
+) -> str | None:
+    candidates: list[str | None] = [data.get("description")]
+    # Most recent comments usually contain the latest executor-created PR URL.
+    candidates.extend(c.body for c in reversed(comments))
+    for attachment in attachments:
+        candidates.extend([attachment.url, attachment.title, attachment.subtitle])
+    for text in candidates:
+        url = _extract_github_pr_url(text)
+        if url:
+            return url
+    return None
+
+
+def _run_gh_pr_ready(pr_url: str) -> CommandResult:
+    try:
+        completed = subprocess.run(
+            ["gh", "pr", "ready", pr_url],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("GitHub CLI `gh` is not installed or not on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        return CommandResult(124, stdout, stderr or "gh pr ready timed out")
+    return CommandResult(completed.returncode, completed.stdout or "", completed.stderr or "")
+
+
+def _gh_pr_ready_succeeded(result: CommandResult) -> bool:
+    if result.exit_code == 0:
+        return True
+    combined = f"{result.stdout}\n{result.stderr}".lower()
+    return "already" in combined and ("ready" in combined or "not a draft" in combined)
+
+
+def _format_command_result(result: CommandResult, limit: int = 4000) -> str:
+    lines = [f"exit code: {result.exit_code}"]
+    if result.stdout.strip():
+        lines.append("stdout:")
+        lines.append(_truncate(result.stdout.strip(), limit=limit))
+    if result.stderr.strip():
+        lines.append("stderr:")
+        lines.append(_truncate(result.stderr.strip(), limit=limit))
+    return "\n".join(lines)
+
+
+def _move_issue_to_human_input(issue_id: str, identifier: str) -> None:
+    state_id = _state_id("Human Input Needed")
+    if state_id:
+        linear_api.set_issue_state(issue_id, state_id)
+        logger.info("review-watch — id=%s state→Human Input Needed", identifier)
 
 
 def _workflow_state_name(data: dict) -> str | None:
@@ -841,6 +936,80 @@ def orchestrate_proxy(payload: dict, delivery_id: str | None = None) -> None:
             except Exception:
                 pass
         raise
+
+
+def orchestrate_review_watch(payload: dict, delivery_id: str | None = None) -> None:
+    """Publish a linked draft PR and leave the ticket in AI Review Watch."""
+    data = payload.get("data") or {}
+    issue_id = data.get("id", "")
+    identifier = data.get("identifier", "?")
+
+    if not issue_id:
+        logger.warning("review-watch — id=%s no issue_id, skipped", identifier)
+        return
+
+    try:
+        attachments = linear_api.fetch_issue_attachments(issue_id)
+        comments = linear_api.fetch_issue_comments(issue_id)
+        pr_url = _find_github_pr_url(data, attachments, comments)
+        if not pr_url:
+            body = (
+                f"{HEADER_REVIEW_WATCH}\n\n"
+                "No GitHub pull request URL was found in the Linear issue "
+                "description, attachments, or comments. Add the PR URL or a "
+                "`Linear: <issue-key>` PR link, then move the ticket back to "
+                "`AI Review Watch` to retry.\n\n"
+                f"---\n_ticket: {identifier} • delivery: {delivery_id or '?'}_"
+            )
+            linear_api.post_comment(issue_id, body)
+            _move_issue_to_human_input(issue_id, identifier)
+            return
+
+        result = _run_gh_pr_ready(pr_url)
+        if _gh_pr_ready_succeeded(result):
+            details = _format_command_result(result) if result.stdout.strip() or result.stderr.strip() else "exit code: 0"
+            body = (
+                f"{HEADER_REVIEW_WATCH}\n\n"
+                f"Marked PR ready for review: {pr_url}\n\n"
+                "Command:\n"
+                "```\n"
+                f"gh pr ready {pr_url}\n"
+                "```\n\n"
+                "Result:\n"
+                "```\n"
+                f"{details}\n"
+                "```\n\n"
+                f"---\n_ticket: {identifier} • delivery: {delivery_id or '?'}_"
+            )
+            linear_api.post_comment(issue_id, body)
+            logger.info("review-watch — id=%s marked PR ready: %s", identifier, pr_url)
+            return
+
+        body = (
+            f"{HEADER_REVIEW_WATCH}\n\n"
+            f"Could not mark PR ready for review: {pr_url}\n\n"
+            "Command result:\n"
+            "```\n"
+            f"{_format_command_result(result)}\n"
+            "```\n\n"
+            "Status moved to `Human Input Needed`; fix the PR/link or run "
+            "the GitHub action manually, then move back to `AI Review Watch`.\n\n"
+            f"---\n_ticket: {identifier} • delivery: {delivery_id or '?'}_"
+        )
+        linear_api.post_comment(issue_id, body)
+        _move_issue_to_human_input(issue_id, identifier)
+        logger.warning("review-watch — id=%s gh pr ready failed for %s", identifier, pr_url)
+
+    except Exception as exc:
+        logger.error("review-watch FAILED for %s: %s\n%s", identifier, exc, traceback.format_exc())
+        try:
+            linear_api.post_comment(
+                issue_id,
+                f"{HEADER_REVIEW_WATCH}\n\nFailed while preparing review watch:\n```\n{exc}\n```",
+            )
+            _move_issue_to_human_input(issue_id, identifier)
+        except Exception:
+            pass
 
 
 def orchestrate_complete(payload: dict, delivery_id: str | None = None) -> None:

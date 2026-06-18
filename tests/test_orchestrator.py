@@ -418,6 +418,89 @@ def test_stage2_posts_confirmation_comment_no_state_change(patched_orchestrator)
     assert patched_orchestrator["state_changes"] == []
 
 
+def test_review_watch_marks_linked_github_pr_ready(monkeypatch, patched_orchestrator):
+    patched_orchestrator["_comments_to_return"] = [
+        Comment(
+            id="c-pr",
+            body="PR is https://github.com/BASIC-BIT/linear-executor/pull/123",
+            created_at="2026-06-17T10:00:00Z",
+            author_name="Linear-Executor",
+            is_executor_comment=True,
+        )
+    ]
+    calls = []
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_gh_pr_ready",
+        lambda pr_url: calls.append(pr_url) or orchestrator.CommandResult(0, "", ""),
+    )
+
+    orchestrator.orchestrate_review_watch(_payload(state_name="AI Review Watch"), delivery_id="d-rw")
+
+    assert calls == ["https://github.com/BASIC-BIT/linear-executor/pull/123"]
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "Marked PR ready for review" in body
+    assert "gh pr ready https://github.com/BASIC-BIT/linear-executor/pull/123" in body
+    assert patched_orchestrator["state_changes"] == []
+
+
+def test_review_watch_converts_linear_review_url(monkeypatch, patched_orchestrator):
+    patched_orchestrator["_comments_to_return"] = [
+        Comment(
+            id="c-pr",
+            body="Review at https://linear.review/BASIC-BIT/linear-executor/pull/456",
+            created_at="2026-06-17T10:00:00Z",
+            author_name="Linear-Executor",
+            is_executor_comment=True,
+        )
+    ]
+    calls = []
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_gh_pr_ready",
+        lambda pr_url: calls.append(pr_url) or orchestrator.CommandResult(0, "", ""),
+    )
+
+    orchestrator.orchestrate_review_watch(_payload(state_name="AI Review Watch"), delivery_id="d-rw")
+
+    assert calls == ["https://github.com/BASIC-BIT/linear-executor/pull/456"]
+
+
+def test_review_watch_missing_pr_url_moves_to_human_input(patched_orchestrator):
+    orchestrator.orchestrate_review_watch(_payload(state_name="AI Review Watch"), delivery_id="d-rw")
+
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "No GitHub pull request URL was found" in body
+    assert patched_orchestrator["state_changes"] == [
+        {"issue_id": "issue-uuid", "state_id": "state-id-for-Human Input Needed"}
+    ]
+
+
+def test_review_watch_failed_gh_ready_moves_to_human_input(monkeypatch, patched_orchestrator):
+    patched_orchestrator["_attachments_to_return"] = [
+        Attachment(
+            id="att-pr",
+            title="PR",
+            url="https://github.com/BASIC-BIT/linear-executor/pull/789",
+            subtitle=None,
+        )
+    ]
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_gh_pr_ready",
+        lambda pr_url: orchestrator.CommandResult(1, "", "GraphQL: Not Found"),
+    )
+
+    orchestrator.orchestrate_review_watch(_payload(state_name="AI Review Watch"), delivery_id="d-rw")
+
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "Could not mark PR ready" in body
+    assert "GraphQL: Not Found" in body
+    assert patched_orchestrator["state_changes"] == [
+        {"issue_id": "issue-uuid", "state_id": "state-id-for-Human Input Needed"}
+    ]
+
+
 # --- Phase 3b: git-aware paths --------------------------------------------------
 
 

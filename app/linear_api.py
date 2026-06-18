@@ -44,6 +44,7 @@ EXECUTOR_COMMENT_PREFIXES = (
     "⚠ **Linear-Executor**",        # HEADER_CONFLICT
     "⚡ **Linear-Executor**",        # HEADER_PROXY
     "⏸ **Linear-Executor**",        # HEADER_CANCELLED
+    "👀 **Linear-Executor**",        # HEADER_REVIEW_WATCH
     "⏳ **Linear-Executor**",        # lifecycle Queued
     "\U0001f3c3 **Linear-Executor**",   # 🏃 lifecycle Running
     "❌ **Linear-Executor**",        # lifecycle Failed

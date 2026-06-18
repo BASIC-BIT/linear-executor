@@ -51,6 +51,7 @@ def test_worker_dispatches_start_to_orchestrate_start(db, monkeypatch):
     monkeypatch.setattr("app.worker.orchestrate_start", fake_start)
     monkeypatch.setattr("app.worker.orchestrate_proxy", lambda *a, **kw: calls.append(("proxy", a, kw)))
     monkeypatch.setattr("app.worker.orchestrate_complete", lambda *a, **kw: calls.append(("complete", a, kw)))
+    monkeypatch.setattr("app.worker.orchestrate_review_watch", lambda *a, **kw: calls.append(("review_watch", a, kw)))
 
     jid = q.enqueue(db, kind="start", payload=_payload("TES-801"), delivery_id="d-801")
     w.process_one(db)
@@ -65,14 +66,17 @@ def test_worker_dispatches_proxy_and_complete_to_right_handler(db, monkeypatch):
     monkeypatch.setattr("app.worker.orchestrate_start", lambda *a, **kw: calls.append(("start",)))
     monkeypatch.setattr("app.worker.orchestrate_proxy", lambda payload, delivery_id=None: calls.append(("proxy", payload["data"]["identifier"])))
     monkeypatch.setattr("app.worker.orchestrate_complete", lambda payload, delivery_id=None: calls.append(("complete", payload["data"]["identifier"])))
+    monkeypatch.setattr("app.worker.orchestrate_review_watch", lambda payload, delivery_id=None: calls.append(("review_watch", payload["data"]["identifier"])))
 
     q.enqueue(db, kind="proxy", payload=_payload("TES-P1", issue_id="iss-p1"), delivery_id="p1")
     q.enqueue(db, kind="complete", payload=_payload("TES-C1", issue_id="iss-c1"), delivery_id="c1")
+    q.enqueue(db, kind="review_watch", payload=_payload("TES-RW1", issue_id="iss-rw1"), delivery_id="rw1")
 
     w.process_one(db)
     w.process_one(db)
+    w.process_one(db)
 
-    assert calls == [("proxy", "TES-P1"), ("complete", "TES-C1")]
+    assert calls == [("proxy", "TES-P1"), ("complete", "TES-C1"), ("review_watch", "TES-RW1")]
 
 
 def test_worker_retries_on_exception_then_fails(db, monkeypatch):
@@ -85,6 +89,7 @@ def test_worker_retries_on_exception_then_fails(db, monkeypatch):
     monkeypatch.setattr("app.worker.orchestrate_start", flaky)
     monkeypatch.setattr("app.worker.orchestrate_proxy", lambda *a, **kw: None)
     monkeypatch.setattr("app.worker.orchestrate_complete", lambda *a, **kw: None)
+    monkeypatch.setattr("app.worker.orchestrate_review_watch", lambda *a, **kw: None)
 
     jid = q.enqueue(db, kind="start", payload=_payload("TES-R1"), delivery_id="r1", max_retries=2)
 
@@ -131,6 +136,7 @@ def test_final_failure_posts_linear_comment_and_resets_state(db, monkeypatch):
     monkeypatch.setattr("app.worker.orchestrate_start", always_fail)
     monkeypatch.setattr("app.worker.orchestrate_proxy", lambda *a, **kw: None)
     monkeypatch.setattr("app.worker.orchestrate_complete", lambda *a, **kw: None)
+    monkeypatch.setattr("app.worker.orchestrate_review_watch", lambda *a, **kw: None)
 
     jid = q.enqueue(db, kind="start", payload=_payload("TES-FAIL", issue_id="iss-fail"), delivery_id="f1", max_retries=1)
 
@@ -170,6 +176,7 @@ def test_final_failure_swallows_linear_errors(db, monkeypatch):
     monkeypatch.setattr("app.worker.orchestrate_start", always_fail)
     monkeypatch.setattr("app.worker.orchestrate_proxy", lambda *a, **kw: None)
     monkeypatch.setattr("app.worker.orchestrate_complete", lambda *a, **kw: None)
+    monkeypatch.setattr("app.worker.orchestrate_review_watch", lambda *a, **kw: None)
 
     jid = q.enqueue(db, kind="start", payload=_payload("TES-FAIL2", issue_id="iss-fail2"), delivery_id="f2", max_retries=0)
 
@@ -185,6 +192,7 @@ def test_worker_skips_cancelled_jobs(db, monkeypatch):
     monkeypatch.setattr("app.worker.orchestrate_start", lambda *a, **kw: calls.append("ran"))
     monkeypatch.setattr("app.worker.orchestrate_proxy", lambda *a, **kw: None)
     monkeypatch.setattr("app.worker.orchestrate_complete", lambda *a, **kw: None)
+    monkeypatch.setattr("app.worker.orchestrate_review_watch", lambda *a, **kw: None)
 
     jid = q.enqueue(db, kind="start", payload=_payload("TES-C2"), delivery_id="c2")
     q.mark_cancelled_for_ticket(db, ticket_id="iss-800")  # payload default issue_id
@@ -199,6 +207,7 @@ def test_process_one_returns_none_when_queue_empty(db, monkeypatch):
     monkeypatch.setattr("app.worker.orchestrate_start", lambda *a, **kw: None)
     monkeypatch.setattr("app.worker.orchestrate_proxy", lambda *a, **kw: None)
     monkeypatch.setattr("app.worker.orchestrate_complete", lambda *a, **kw: None)
+    monkeypatch.setattr("app.worker.orchestrate_review_watch", lambda *a, **kw: None)
 
     assert w.process_one(db) is None
 
@@ -209,6 +218,7 @@ def test_express_worker_only_picks_proxy_jobs(db, monkeypatch):
     monkeypatch.setattr("app.worker.orchestrate_start", lambda p, delivery_id=None: calls.append(("start", p["data"]["identifier"])))
     monkeypatch.setattr("app.worker.orchestrate_proxy", lambda p, delivery_id=None: calls.append(("proxy", p["data"]["identifier"])))
     monkeypatch.setattr("app.worker.orchestrate_complete", lambda *a, **kw: None)
+    monkeypatch.setattr("app.worker.orchestrate_review_watch", lambda *a, **kw: None)
 
     j_start = q.enqueue(db, kind="start", payload=_payload("TES-EX1", issue_id="iss-ex1"), delivery_id="ex1")
     j_proxy = q.enqueue(db, kind="proxy", payload=_payload("TES-EX2", issue_id="iss-ex2"), delivery_id="ex2")
@@ -246,6 +256,7 @@ def test_two_lane_workers_run_parallel_without_double_claim(db, monkeypatch):
     monkeypatch.setattr("app.worker.orchestrate_start", fake_start)
     monkeypatch.setattr("app.worker.orchestrate_proxy", fake_proxy)
     monkeypatch.setattr("app.worker.orchestrate_complete", lambda *a, **kw: None)
+    monkeypatch.setattr("app.worker.orchestrate_review_watch", lambda *a, **kw: None)
 
     general = w.Worker(db, poll_interval=0.05, lane="general")
     express = w.Worker(db, poll_interval=0.05, kinds=["proxy"], lane="express")
@@ -280,6 +291,7 @@ def test_worker_thread_consumes_queue_and_can_be_stopped(db, monkeypatch):
     monkeypatch.setattr("app.worker.orchestrate_start", fake_start)
     monkeypatch.setattr("app.worker.orchestrate_proxy", lambda *a, **kw: None)
     monkeypatch.setattr("app.worker.orchestrate_complete", lambda *a, **kw: None)
+    monkeypatch.setattr("app.worker.orchestrate_review_watch", lambda *a, **kw: None)
 
     worker = w.Worker(db, poll_interval=0.05)
     worker.start()

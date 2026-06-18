@@ -8,6 +8,7 @@ Two transition groups trigger us:
   then set state to ``Draft PR Ready``.
 - ``* → Done`` (Stage 2) — BASIC approved final completion: merge the work
   branch when one exists, clean up the worktree, post a final comment.
+- ``* → AI Review Watch`` — mark the linked draft PR ready for review.
 
 Anything else is ignored (we still respond 200 so Linear doesn't retry).
 """
@@ -25,6 +26,7 @@ START_STATE_NAMES = (PLANNING_STATE_NAME, START_STATE_NAME)
 COMPLETE_STATE_NAME = "Done"
 DRAFT_READY_STATE_NAME = "Draft PR Ready"
 CANCEL_STATE_NAME = "Stop AI"
+REVIEW_WATCH_STATE_NAME = "AI Review Watch"
 
 # Tickets in this Linear project run via the lightweight proxy flow
 # (Phase 4): no folder mapping, no git worktree, status straight to Done.
@@ -77,6 +79,11 @@ def should_cancel_run(payload: dict) -> bool:
     explicitly via Todo → AI Implementation if desired.
     """
     return _is_state_transition_to(payload, CANCEL_STATE_NAME)
+
+
+def should_start_review_watch(payload: dict) -> bool:
+    """True when the ticket entered the PR review-watch lane."""
+    return _is_state_transition_to(payload, REVIEW_WATCH_STATE_NAME)
 
 
 def should_complete_review(payload: dict) -> bool:

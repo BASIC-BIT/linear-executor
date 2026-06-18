@@ -134,6 +134,12 @@ def test_fetch_comments_returns_chronological_list():
                                     "createdAt": "2026-04-20T10:10:00Z",
                                     "user": {"id": "u1", "name": "Bastian"},
                                 },
+                                {
+                                    "id": "c4",
+                                    "body": "👀 **Linear-Executor** — Review Watch\nMarked PR ready",
+                                    "createdAt": "2026-04-20T10:15:00Z",
+                                    "user": {"id": "u1", "name": "Bastian"},
+                                },
                             ]
                         }
                     }
@@ -143,11 +149,12 @@ def test_fetch_comments_returns_chronological_list():
 
     with _mock_client(handler) as client:
         result = fetch_issue_comments("issue-uuid", client=client)
-    assert len(result) == 3
-    assert [c.id for c in result] == ["c1", "c2", "c3"]
+    assert len(result) == 4
+    assert [c.id for c in result] == ["c1", "c2", "c3", "c4"]
     assert result[0].body == "First note from Bastian"
     assert result[1].is_executor_comment is True
     assert result[2].is_executor_comment is False
+    assert result[3].is_executor_comment is True
 
 
 def test_fetch_comments_returns_empty_when_none():
