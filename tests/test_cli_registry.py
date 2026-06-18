@@ -13,6 +13,7 @@ from app.cli_registry import (
     build_argv,
     resolve_context_mode,
     resolve_cli,
+    resolve_bin,
     resolve_reasoning,
     resolve_timeout,
 )
@@ -73,6 +74,18 @@ def test_build_argv_appends_prompt_for_each_cli():
 def test_build_argv_unknown_cli_raises():
     with pytest.raises(ValueError, match="unknown cli"):
         build_argv("cursor", "hi")
+
+
+def test_resolve_bin_prefers_opencode_exe_over_windows_cmd_shim(monkeypatch, tmp_path):
+    shim = tmp_path / "opencode.cmd"
+    shim.write_text("@echo off\n%*\n", encoding="utf-8")
+    real = tmp_path / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
+    real.parent.mkdir(parents=True)
+    real.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("app.cli_registry.shutil.which", lambda name: str(shim) if name == "opencode" else None)
+
+    assert resolve_bin("opencode") == str(real)
 
 
 def test_forge_in_registry():

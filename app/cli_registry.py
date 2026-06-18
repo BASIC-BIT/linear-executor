@@ -148,12 +148,24 @@ def resolve_bin(cli_name: str) -> str:
     bin_name = CLI_REGISTRY[cli_name][0]
     found = shutil.which(bin_name)
     if found:
+        if cli_name == "opencode":
+            real_exe = _opencode_exe_for_cmd_shim(Path(found))
+            if real_exe is not None:
+                return str(real_exe)
         return found
     for fallback in _FALLBACK_PATHS.get(cli_name, ()):
         p = Path(fallback).expanduser()
         if p.exists():
             return str(p)
     return bin_name  # last resort — will fail loudly with FileNotFoundError
+
+
+def _opencode_exe_for_cmd_shim(path: Path) -> Path | None:
+    """Avoid Windows .cmd shims that mangle multiline prompt arguments."""
+    if path.suffix.lower() != ".cmd":
+        return None
+    candidate = path.parent / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
+    return candidate if candidate.exists() else None
 
 
 def _label_names(labels) -> list[str]:
