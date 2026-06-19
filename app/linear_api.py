@@ -33,6 +33,21 @@ class Attachment:
     subtitle: str | None
 
 
+@dataclass(frozen=True)
+class IssueSummary:
+    id: str
+    identifier: str
+    title: str
+    url: str
+    state_name: str
+    state_type: str
+    project_name: str | None
+    labels: tuple[str, ...]
+    created_at: str
+    updated_at: str
+    completed_at: str | None
+
+
 # Prefix markers the orchestrator uses when it posts its own comments back to
 # Linear. Any comment starting with one of these is a previous executor run
 # (or a Claude-emitted progress update during a previous run) and should be
@@ -112,6 +127,95 @@ def fetch_issue_project_id(issue_id: str, *, client: httpx.Client | None = None)
         return project.get("id")
     except Exception:
         return None
+    finally:
+        if owns_client:
+            client.close()
+
+
+def fetch_project_issues(
+    project_name: str,
+    state_names: list[str],
+    *,
+    first: int = 100,
+    client: httpx.Client | None = None,
+) -> list[IssueSummary]:
+    """Fetch issues for an executive-assistant sweep.
+
+    This intentionally returns a compact, prose-safe issue snapshot instead of
+    raw GraphQL payloads. Callers render evidence pointers, not full issue data.
+    """
+    query = """
+    query($projectName: String!, $stateNames: [String!], $first: Int!, $after: String) {
+      issues(
+        first: $first,
+        after: $after,
+        filter: {
+          project: { name: { eq: $projectName } }
+          state: { name: { in: $stateNames } }
+        }
+      ) {
+        nodes {
+          id
+          identifier
+          title
+          url
+          createdAt
+          updatedAt
+          completedAt
+          state { name type }
+          project { name }
+          labels { nodes { name } }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    owns_client = client is None
+    client = client or _client()
+    issues: list[IssueSummary] = []
+    after: str | None = None
+    try:
+        while True:
+            data = _post_graphql(
+                client,
+                query,
+                {
+                    "projectName": project_name,
+                    "stateNames": state_names,
+                    "first": first,
+                    "after": after,
+                },
+            )
+            page = data.get("issues") or {}
+            for node in page.get("nodes") or []:
+                state = node.get("state") or {}
+                project = node.get("project") or {}
+                labels = node.get("labels") or {}
+                issues.append(
+                    IssueSummary(
+                        id=node.get("id", "") or "",
+                        identifier=node.get("identifier", "") or "",
+                        title=node.get("title", "") or "",
+                        url=node.get("url", "") or "",
+                        state_name=state.get("name", "") or "",
+                        state_type=state.get("type", "") or "",
+                        project_name=project.get("name"),
+                        labels=tuple(
+                            label.get("name", "") or ""
+                            for label in (labels.get("nodes") or [])
+                            if label.get("name")
+                        ),
+                        created_at=node.get("createdAt", "") or "",
+                        updated_at=node.get("updatedAt", "") or "",
+                        completed_at=node.get("completedAt"),
+                    )
+                )
+            page_info = page.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                return issues
+            after = page_info.get("endCursor")
+            if not after:
+                return issues
     finally:
         if owns_client:
             client.close()

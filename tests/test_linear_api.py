@@ -8,6 +8,7 @@ from app.linear_api import (
     create_attachment,
     fetch_issue_attachments,
     fetch_issue_comments,
+    fetch_project_issues,
     fetch_workflow_state_id,
     post_comment,
     set_issue_state,
@@ -234,3 +235,49 @@ def test_graphql_errors_raise():
     with _mock_client(handler) as client:
         with pytest.raises(RuntimeError, match="forbidden"):
             fetch_issue_attachments("x", client=client)
+
+
+def test_fetch_project_issues_returns_compact_issue_summaries():
+    seen = []
+
+    def handler(request):
+        body = request.read().decode()
+        seen.append(body)
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "issues": {
+                        "nodes": [
+                            {
+                                "id": "issue-uuid",
+                                "identifier": "BAS-117",
+                                "title": "Implement Linear EA inbox memo sweep",
+                                "url": "https://linear.app/basicbit/issue/BAS-117/x",
+                                "createdAt": "2026-06-19T07:15:12Z",
+                                "updatedAt": "2026-06-19T18:10:38Z",
+                                "completedAt": None,
+                                "state": {"name": "Todo", "type": "unstarted"},
+                                "project": {"name": "Linear Agent Control Plane"},
+                                "labels": {"nodes": [{"name": "infrastructure"}]},
+                            }
+                        ],
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    }
+                }
+            },
+        )
+
+    with _mock_client(handler) as client:
+        issues = fetch_project_issues(
+            "Linear Agent Control Plane",
+            ["Todo", "Human Design Review"],
+            client=client,
+        )
+
+    assert len(issues) == 1
+    assert issues[0].identifier == "BAS-117"
+    assert issues[0].state_name == "Todo"
+    assert issues[0].project_name == "Linear Agent Control Plane"
+    assert issues[0].labels == ("infrastructure",)
+    assert "Linear Agent Control Plane" in seen[0]
