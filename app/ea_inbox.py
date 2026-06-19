@@ -120,10 +120,19 @@ def _issue_evidence(issue: linear_api.IssueSummary) -> tuple[dict[str, str], ...
 
 
 def classify_issue(issue: linear_api.IssueSummary, *, since: datetime | None, now: datetime) -> MemoItem | None:
+    return classify_issue_with_jobs(issue, active_job_issue_keys=set(), since=since, now=now)
+
+
+def classify_issue_with_jobs(
+    issue: linear_api.IssueSummary,
+    *,
+    active_job_issue_keys: set[str],
+    since: datetime | None,
+    now: datetime,
+) -> MemoItem | None:
     updated = _parse_datetime(issue.updated_at) or now
     completed = _parse_datetime(issue.completed_at)
     issue_key = issue.identifier or issue.id
-    project = issue.project_name or DEFAULT_PROJECT
     state = issue.state_name
 
     if state == "Human Input Needed":
@@ -168,7 +177,35 @@ def classify_issue(issue: linear_api.IssueSummary, *, since: datetime | None, no
             needs_human=True,
             dedupe=f"{issue_key}:draft-pr-ready",
         )
+    if state == "Stop AI":
+        return _issue_item(
+            issue,
+            now=now,
+            updated=updated,
+            kind="stop_signal",
+            category="needs BASIC action",
+            severity="medium",
+            summary=f"{issue_key} is still in Stop AI.",
+            why="Stop signals should not linger silently after cancellation; the board needs an explicit next state.",
+            action="Confirm the run is cancelled, then move the issue to a held/review state or close/defer it.",
+            needs_human=True,
+            dedupe=f"{issue_key}:stop-ai",
+        )
     if state in {"AI Planning & Research", "AI Implementation"}:
+        if issue_key not in active_job_issue_keys and issue.id not in active_job_issue_keys:
+            return _issue_item(
+                issue,
+                now=now,
+                updated=updated,
+                kind="active_lane_without_job",
+                category="blocked/failing",
+                severity="high",
+                summary=f"{issue_key} is in {state} but has no pending/running executor job.",
+                why="An AI-active board state without an active job is likely stranded work, not useful parallelism.",
+                action="Rerun the issue, move it to Human Input Needed with a blocker, or close/defer it if stale.",
+                needs_human=True,
+                dedupe=f"{issue_key}:active-lane-without-job",
+            )
         return _issue_item(
             issue,
             now=now,
@@ -381,7 +418,7 @@ def dedupe_items(items: list[MemoItem]) -> list[MemoItem]:
         key=lambda item: (
             CATEGORY_ORDER.index(item.category) if item.category in CATEGORY_ORDER else len(CATEGORY_ORDER),
             -SEVERITY_RANK[item.severity],
-            item.updated_at,
+            -(_parse_datetime(item.updated_at) or datetime.min.replace(tzinfo=UTC)).timestamp(),
         ),
     )
 
@@ -395,8 +432,20 @@ def build_report(
     warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     items: list[MemoItem] = []
+    active_job_issue_keys = {
+        key
+        for job in jobs
+        if job.status in {"pending", "running"}
+        for key in (job.identifier, job.ticket_id)
+        if key
+    }
     for issue in issues:
-        item = classify_issue(issue, since=since, now=now)
+        item = classify_issue_with_jobs(
+            issue,
+            active_job_issue_keys=active_job_issue_keys,
+            since=since,
+            now=now,
+        )
         if item is not None:
             items.append(item)
     for job in jobs:
@@ -522,6 +571,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--write-state", type=Path, default=DEFAULT_LAST_REPORT_PATH, help="Write latest report JSON here")
     parser.add_argument("--no-linear", action="store_true", help="Skip Linear API reads and report only executor state")
     parser.add_argument("--ack", action="store_true", help="Mark this report as acknowledged after generation")
+    parser.add_argument("--ack-with-warnings", action="store_true", help="Allow --ack even when some data sources failed")
     parser.add_argument("--post-linear-comment", action="store_true", help="Post Markdown digest to --inbox-issue-id")
     parser.add_argument("--inbox-issue-id", help="Linear issue UUID/identifier for the EA inbox comment")
     return parser
@@ -551,6 +601,10 @@ def main(argv: list[str] | None = None) -> int:
             print("--inbox-issue-id is required with --post-linear-comment", file=sys.stderr)
             return 2
         linear_api.post_comment(args.inbox_issue_id, render_markdown(report))
+
+    if args.ack and warnings and not args.ack_with_warnings:
+        print("Refusing to acknowledge an incomplete report; rerun without warnings or pass --ack-with-warnings.", file=sys.stderr)
+        return 1
 
     if args.ack:
         save_ack_cursor(args.cursor, now)
