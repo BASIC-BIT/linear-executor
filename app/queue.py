@@ -240,8 +240,11 @@ def mark_done(db_path: Path, job_id: int) -> None:
         )
 
 
-def mark_failed(db_path: Path, job_id: int, error: str) -> None:
-    """Increment retries; back to ``pending`` if under max, else ``failed``."""
+def mark_failed(db_path: Path, job_id: int, error: str, *, terminal: bool = False) -> None:
+    """Increment retries; back to ``pending`` if under max, else ``failed``.
+
+    ``terminal`` marks deterministic failures that should not be retried.
+    """
     with _connect(db_path) as conn:
         row = conn.execute(
             "SELECT retries, max_retries FROM jobs WHERE id=?",
@@ -250,7 +253,7 @@ def mark_failed(db_path: Path, job_id: int, error: str) -> None:
         if row is None:
             return
         new_retries = row["retries"] + 1
-        if new_retries > row["max_retries"]:
+        if terminal or new_retries > row["max_retries"]:
             conn.execute(
                 """
                 UPDATE jobs

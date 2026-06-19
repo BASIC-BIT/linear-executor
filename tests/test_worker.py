@@ -112,6 +112,25 @@ def test_worker_retries_on_exception_then_fails(db, monkeypatch):
     assert attempts["count"] == 3
 
 
+def test_worker_does_not_retry_worktree_preparation_error(db, monkeypatch):
+    def invalid_worktree(payload, delivery_id=None):
+        raise w.WorktreePreparationError("could not prepare worktree: manual repair required")
+
+    monkeypatch.setattr("app.worker.orchestrate_start", invalid_worktree)
+    monkeypatch.setattr("app.worker.orchestrate_proxy", lambda *a, **kw: None)
+    monkeypatch.setattr("app.worker.orchestrate_complete", lambda *a, **kw: None)
+    monkeypatch.setattr("app.worker.orchestrate_review_watch", lambda *a, **kw: None)
+
+    jid = q.enqueue(db, kind="start", payload=_payload("TES-WT"), delivery_id="wt", max_retries=3)
+
+    w.process_one(db)
+
+    job = q.get_job(db, jid)
+    assert job.status == "failed"
+    assert job.retries == 1
+    assert "manual repair required" in (job.last_error or "")
+
+
 def test_final_failure_posts_linear_comment_and_resets_state(db, monkeypatch):
     """After max_retries are exhausted, the worker tells Linear about it
     and moves the ticket to Human Input Needed so it doesn't hang on an AI lane."""

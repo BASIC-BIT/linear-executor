@@ -568,6 +568,21 @@ def test_stage1_creates_worktree_when_folder_is_git_repo(monkeypatch, patched_or
     assert "branch: `ticket/TES-901`" in body
 
 
+def test_stage1_rerun_reuses_existing_ticket_worktree(monkeypatch, patched_orchestrator, tmp_path):
+    repo = _make_real_repo(tmp_path)
+    monkeypatch.setattr("app.orchestrator.git_ops.is_git_repo", lambda p: True)
+    monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
+
+    p = _payload(identifier="TES-901-RERUN", description=f"folder: {repo}")
+    orchestrator.orchestrate_start(p, delivery_id="d-git-1")
+    orchestrator.orchestrate_start(p, delivery_id="d-git-2")
+
+    worktree = tmp_path / "tickets" / "TES-901-RERUN" / "worktree"
+    assert worktree.exists()
+    assert len(patched_orchestrator["comments"]) == 2
+    assert "branch: `ticket/TES-901-RERUN`" in patched_orchestrator["comments"][-1]["body"]
+
+
 def test_stage1_includes_diff_in_comment_when_claude_changes_files(monkeypatch, patched_orchestrator, tmp_path):
     repo = _make_real_repo(tmp_path)
     monkeypatch.setattr("app.orchestrator.git_ops.is_git_repo", lambda p: True)

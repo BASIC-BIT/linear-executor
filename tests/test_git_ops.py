@@ -49,6 +49,78 @@ def test_create_worktree_makes_branch_and_dir(repo, tmp_path):
     assert git_ops.default_branch(wt) == "ticket/TES-1"
 
 
+def test_prepare_ticket_worktree_creates_fresh_branch_and_dir(repo, tmp_path):
+    wt = tmp_path / "wt"
+    res = git_ops.prepare_ticket_worktree(repo, wt, "ticket/TES-prepare-1")
+
+    assert res.ok, res.stderr
+    assert wt.exists()
+    assert (wt / "README.md").exists()
+    assert git_ops.default_branch(wt) == "ticket/TES-prepare-1"
+
+
+def test_prepare_ticket_worktree_uses_existing_branch_when_worktree_missing(repo, tmp_path):
+    git_ops._run(["git", "branch", "ticket/TES-prepare-2"], cwd=repo)
+    wt = tmp_path / "wt"
+
+    res = git_ops.prepare_ticket_worktree(repo, wt, "ticket/TES-prepare-2")
+
+    assert res.ok, res.stderr
+    assert wt.exists()
+    assert git_ops.default_branch(wt) == "ticket/TES-prepare-2"
+
+
+def test_prepare_ticket_worktree_reuses_existing_clean_ticket_worktree(repo, tmp_path):
+    wt = tmp_path / "wt"
+    first = git_ops.prepare_ticket_worktree(repo, wt, "ticket/TES-prepare-3")
+    assert first.ok, first.stderr
+
+    second = git_ops.prepare_ticket_worktree(repo, wt, "ticket/TES-prepare-3")
+
+    assert second.ok, second.stderr
+    assert "reusing existing worktree" in second.stdout
+    assert git_ops.default_branch(wt) == "ticket/TES-prepare-3"
+
+
+def test_prepare_ticket_worktree_blocks_existing_dirty_ticket_worktree(repo, tmp_path):
+    wt = tmp_path / "wt"
+    first = git_ops.prepare_ticket_worktree(repo, wt, "ticket/TES-prepare-4")
+    assert first.ok, first.stderr
+    (wt / "dirty.txt").write_text("dirty\n")
+
+    second = git_ops.prepare_ticket_worktree(repo, wt, "ticket/TES-prepare-4")
+
+    assert second.ok is False
+    assert "uncommitted changes" in second.stderr
+    assert "will not delete or overwrite" in second.stderr
+
+
+def test_prepare_ticket_worktree_rejects_invalid_existing_path(repo, tmp_path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / "README.md").write_text("not a worktree\n")
+
+    res = git_ops.prepare_ticket_worktree(repo, wt, "ticket/TES-prepare-5")
+
+    assert res.ok is False
+    assert "stale or invalid ticket worktree path" in res.stderr
+    assert "will not delete worktrees automatically" in res.stderr
+
+
+def test_prepare_ticket_worktree_rejects_branch_checked_out_at_wrong_path(repo, tmp_path):
+    wrong = tmp_path / "wrong"
+    first = git_ops.prepare_ticket_worktree(repo, wrong, "ticket/TES-prepare-6")
+    assert first.ok, first.stderr
+
+    expected = tmp_path / "expected"
+    second = git_ops.prepare_ticket_worktree(repo, expected, "ticket/TES-prepare-6")
+
+    assert second.ok is False
+    assert "already checked out" in second.stderr
+    assert str(expected) in second.stderr
+    assert not expected.exists()
+
+
 def test_commit_all_creates_commit_when_changes(repo, tmp_path):
     wt = tmp_path / "wt"
     git_ops.create_worktree(repo, wt, "ticket/TES-2")

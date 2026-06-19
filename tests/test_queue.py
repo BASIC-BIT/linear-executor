@@ -152,6 +152,19 @@ def test_mark_failed_at_max_retries_goes_to_failed(db):
     assert job.completed_at is not None
 
 
+def test_mark_failed_terminal_skips_retries(db):
+    jid = q.enqueue(db, kind="start", payload=_sample_payload("TES-5T"), delivery_id="d-5t", max_retries=3)
+    q.pick_next_pending(db)
+
+    q.mark_failed(db, jid, error="manual repair required", terminal=True)
+
+    job = q.get_job(db, jid)
+    assert job.status == "failed"
+    assert job.retries == 1
+    assert job.last_error == "manual repair required"
+    assert job.completed_at is not None
+
+
 def test_mark_cancelled_for_ticket_affects_pending_and_running(db):
     j_pending = q.enqueue(db, kind="start", payload=_sample_payload("TES-6", issue_id="iss-6"), delivery_id="d-6")
     j_running = q.enqueue(db, kind="start", payload=_sample_payload("TES-6", issue_id="iss-6"), delivery_id="d-6b")

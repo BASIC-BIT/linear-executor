@@ -23,6 +23,7 @@ from app import linear_api
 from app import queue as q
 from app.orchestrator import (
     TEAM_ID,
+    WorktreePreparationError,
     orchestrate_complete,
     orchestrate_proxy,
     orchestrate_review_watch,
@@ -142,7 +143,8 @@ def process_one(db_path: Path, kinds: list[str] | None = None, *, lane: str = "g
     except Exception as exc:
         tb = traceback.format_exc()
         logger.error("worker[%s] job %d failed: %s\n%s", lane, job.id, exc, tb)
-        q.mark_failed(db_path, job.id, error=f"{exc}\n{tb[-1500:]}")
+        terminal = isinstance(exc, WorktreePreparationError)
+        q.mark_failed(db_path, job.id, error=f"{exc}\n{tb[-1500:]}", terminal=terminal)
         # Final failure (no more retries) → tell Linear so the ticket
         # doesn't sit silently stuck in "AI Implementation". (TES-606)
         after = q.get_job(db_path, job.id)

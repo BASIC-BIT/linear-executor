@@ -75,6 +75,120 @@ def create_worktree(repo_path: Path, worktree_path: Path, branch: str) -> GitRes
     )
 
 
+def prepare_ticket_worktree(repo_path: Path, worktree_path: Path, branch: str) -> GitResult:
+    """Prepare the ticket worktree without destructive cleanup.
+
+    Reruns may find either the intended worktree or the ticket branch already
+    present. Reuse only the exact expected path on the exact expected branch;
+    otherwise return a clear error so a human can repair the repo state.
+    """
+    if worktree_path.exists():
+        return _validate_existing_ticket_worktree(repo_path, worktree_path, branch)
+
+    existing = _worktree_path_for_branch(repo_path, branch)
+    if existing is not None and existing.resolve() != worktree_path.resolve():
+        return GitResult(
+            False,
+            "",
+            (
+                f"ticket branch {branch!r} is already checked out at {existing}, "
+                f"not the expected ticket worktree {worktree_path}. "
+                "Preserving isolation: move the Linear issue to Human Input Needed "
+                "and inspect the existing worktree manually. The executor will not "
+                "delete or move worktrees automatically."
+            ),
+        )
+
+    worktree_path.parent.mkdir(parents=True, exist_ok=True)
+    if _branch_exists(repo_path, branch):
+        return _run(["git", "worktree", "add", str(worktree_path), branch], cwd=repo_path)
+    return create_worktree(repo_path, worktree_path, branch)
+
+
+def _validate_existing_ticket_worktree(repo_path: Path, worktree_path: Path, branch: str) -> GitResult:
+    if not worktree_path.is_dir():
+        return _invalid_worktree_path(worktree_path, "path exists but is not a directory")
+
+    if not is_git_repo(worktree_path):
+        return _invalid_worktree_path(worktree_path, "path is not a usable git worktree")
+
+    repo_common = _git_common_dir(repo_path)
+    worktree_common = _git_common_dir(worktree_path)
+    if repo_common is None or worktree_common is None or repo_common != worktree_common:
+        return _invalid_worktree_path(worktree_path, "path belongs to a different git repository")
+
+    current = _current_branch(worktree_path)
+    if current != branch:
+        return _invalid_worktree_path(
+            worktree_path,
+            f"path is checked out on branch {current!r}, expected {branch!r}",
+        )
+
+    if not working_tree_clean(worktree_path):
+        return GitResult(
+            False,
+            "",
+            (
+                f"ticket worktree {worktree_path} exists for {branch!r} but has "
+                "uncommitted changes. Commit, stash, or move those changes manually, "
+                "then rerun the executor. The executor will not delete or overwrite "
+                "dirty worktrees automatically."
+            ),
+        )
+
+    return GitResult(True, f"reusing existing worktree {worktree_path}", "")
+
+
+def _invalid_worktree_path(worktree_path: Path, reason: str) -> GitResult:
+    return GitResult(
+        False,
+        "",
+        (
+            f"stale or invalid ticket worktree path exists at {worktree_path}: {reason}. "
+            "Move it aside, repair it, or remove it manually before rerunning. "
+            "The executor will not delete worktrees automatically."
+        ),
+    )
+
+
+def _branch_exists(repo_path: Path, branch: str) -> bool:
+    return _run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo_path).ok
+
+
+def _current_branch(repo_path: Path) -> str | None:
+    res = _run(["git", "symbolic-ref", "--short", "HEAD"], cwd=repo_path)
+    if res.ok and res.stdout.strip():
+        return res.stdout.strip()
+    return None
+
+
+def _git_common_dir(repo_path: Path) -> Path | None:
+    res = _run(["git", "rev-parse", "--git-common-dir"], cwd=repo_path)
+    if not res.ok or not res.stdout.strip():
+        return None
+    common = Path(res.stdout.strip())
+    if not common.is_absolute():
+        common = repo_path / common
+    return common.resolve()
+
+
+def _worktree_path_for_branch(repo_path: Path, branch: str) -> Path | None:
+    res = _run(["git", "worktree", "list", "--porcelain"], cwd=repo_path)
+    if not res.ok:
+        return None
+
+    current_path: Path | None = None
+    wanted = f"refs/heads/{branch}"
+    for line in res.stdout.splitlines():
+        if line.startswith("worktree "):
+            current_path = Path(line.removeprefix("worktree "))
+        elif line == f"branch {wanted}" and current_path is not None:
+            return current_path
+        elif not line:
+            current_path = None
+    return None
+
+
 def commit_all(worktree_path: Path, message: str) -> GitResult:
     """Stage all changes and commit. Returns ok=True even if there's nothing to commit."""
     add = _run(["git", "add", "-A"], cwd=worktree_path)

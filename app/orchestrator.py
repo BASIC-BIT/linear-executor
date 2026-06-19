@@ -56,6 +56,10 @@ from app.folders import resolve_folder
 logger = logging.getLogger("linear-executor")
 
 
+class WorktreePreparationError(RuntimeError):
+    """Deterministic worktree state problem that needs human repair."""
+
+
 HEADER_RUN = "🤖 **Linear-Executor** — Coding Agent Run"
 HEADER_REVIEW = "✅ **Linear-Executor** — Marked Done"
 HEADER_MERGE = "🔀 **Linear-Executor** — Merged"
@@ -653,9 +657,11 @@ def orchestrate_start(
             attachments_dir = ticket_dir / "attachments"
             ticket_dir.mkdir(parents=True, exist_ok=True)
 
-            wt_res = git_ops.create_worktree(folder_res.path, worktree_path, branch)
+            wt_res = git_ops.prepare_ticket_worktree(folder_res.path, worktree_path, branch)
             if not wt_res.ok:
-                raise RuntimeError(f"could not create worktree: {wt_res.stderr.strip() or wt_res.stdout.strip()}")
+                raise WorktreePreparationError(
+                    f"could not prepare worktree: {wt_res.stderr.strip() or wt_res.stdout.strip()}"
+                )
             cwd = worktree_path
             logger.info("stage1 — id=%s git worktree at %s on branch %s", identifier, cwd, branch)
         else:
