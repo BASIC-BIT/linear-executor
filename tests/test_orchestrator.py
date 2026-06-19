@@ -895,6 +895,73 @@ def test_stage1_uploads_new_files_as_linear_attachments(monkeypatch, patched_orc
     assert "data.csv" in body
 
 
+def test_stage1_does_not_upload_local_runtime_artifacts(monkeypatch, patched_orchestrator, tmp_path):
+    cwd = tmp_path / "stage1-runtime-artifacts"
+    cwd.mkdir()
+    monkeypatch.setattr(orchestrator, "resolve_folder",
+                        lambda data: type("F", (), {"strategy": "fallback", "path": cwd})())
+
+    attached: list[Path] = []
+    def fake_attach(issue_id, local_path, *, title=None, subtitle=None, content_type=None, client=None):
+        attached.append(local_path)
+        return f"att-{local_path.name}"
+    monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", fake_attach)
+
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
+        (cwd / "report.md").write_text("# generated\n")
+        (cwd / "state").mkdir()
+        (cwd / "state" / "jobs.db").write_text("sqlite-ish\n")
+        (cwd / "state" / "webhook.log").write_text("log line\n")
+        (cwd / ".env.local").write_text("TOKEN=secret\n")
+        (cwd / "scratch.sqlite").write_text("sqlite-ish\n")
+        return runner_mod.RunResult(0, "wrote files", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    orchestrator.orchestrate_start(_payload(identifier="TES-ATT-RUNTIME"), delivery_id="d-runtime")
+
+    assert [p.name for p in attached] == ["report.md"]
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "report.md" in body
+    assert "jobs.db" not in body
+    assert "webhook.log" not in body
+    assert ".env.local" not in body
+
+
+def test_stage1_does_not_upload_gitignored_state_artifacts(monkeypatch, patched_orchestrator, tmp_path):
+    from app import git_ops as g
+    repo = _make_real_repo(tmp_path)
+    (repo / ".gitignore").write_text("state/\n*.log\n*.db\n", encoding="utf-8")
+    g._run(["git", "add", "-A"], cwd=repo)
+    g._run(["git", "commit", "-m", "ignore runtime state"], cwd=repo)
+    monkeypatch.setattr("app.orchestrator.git_ops.is_git_repo", lambda p: True)
+    monkeypatch.setattr("app.orchestrator.TICKETS_BASE", tmp_path / "tickets")
+
+    attached: list[Path] = []
+    def fake_attach(issue_id, local_path, *, title=None, subtitle=None, content_type=None, client=None):
+        attached.append(local_path)
+        return f"att-{local_path.name}"
+    monkeypatch.setattr(orchestrator.linear_api, "attach_local_file", fake_attach)
+
+    from app import runner as runner_mod
+    def fake_run(cli, prompt, cwd, *, timeout=runner_mod.DEFAULT_TIMEOUT_SECONDS, on_start=None, model=None, auth_mode="oauth"):
+        (cwd / "report.md").write_text("# generated\n")
+        (cwd / "state").mkdir()
+        (cwd / "state" / "jobs.db").write_text("sqlite-ish\n")
+        (cwd / "state" / "webhook.log").write_text("log line\n")
+        return runner_mod.RunResult(0, "wrote files", "", False)
+    monkeypatch.setattr("app.orchestrator.runner.run_cli", fake_run)
+
+    p = _payload(identifier="TES-ATT-GITIGNORE", description=f"folder: {repo}")
+    orchestrator.orchestrate_start(p, delivery_id="d-gitignored")
+
+    assert [p.name for p in attached] == ["report.md"]
+    body = patched_orchestrator["comments"][0]["body"]
+    assert "report.md" in body
+    assert "jobs.db" not in body
+    assert "webhook.log" not in body
+
+
 def test_stage1_omits_files_section_when_nothing_written(monkeypatch, patched_orchestrator, tmp_path):
     """If Claude doesn't touch any file in cwd, no upload section is rendered."""
     cwd = tmp_path / "stage1-empty"

@@ -776,11 +776,75 @@ def _proxy_dir(identifier: str) -> Path:
     return PROXY_BASE / identifier
 
 
-# Files Claude shouldn't have its work uploaded — internal cache/scratch dirs,
-# editor lock files, anything that's not actually output.
+# Files Claude shouldn't have its work uploaded: runtime state, caches,
+# dependency trees, local secrets, and anything ignored by the repo.
 _ATTACH_SKIP_NAMES = {".DS_Store", "Thumbs.db"}
-_ATTACH_SKIP_DIR_NAMES = {".git", "__pycache__", ".pytest_cache", ".venv", "node_modules"}
+_ATTACH_SKIP_DIR_NAMES = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "ENV",
+    "__pycache__",
+    "build",
+    "dist",
+    "env",
+    "logs",
+    "node_modules",
+    "proxy-outputs",
+    "state",
+    "venv",
+}
+_ATTACH_SKIP_SUFFIXES = {".db", ".log", ".sqlite", ".sqlite3"}
 _ATTACH_MAX_BYTES = 25 * 1024 * 1024  # Linear's per-file limit
+
+
+def _is_local_artifact(path: Path, root: Path) -> bool:
+    rel = path.relative_to(root)
+    if path.name in _ATTACH_SKIP_NAMES:
+        return True
+    if any(part in _ATTACH_SKIP_DIR_NAMES for part in rel.parts):
+        return True
+    if path.name.startswith(".env"):
+        return True
+    return path.suffix.lower() in _ATTACH_SKIP_SUFFIXES
+
+
+def _git_ignored_files(root: Path, files: list[Path]) -> set[Path]:
+    if not files:
+        return set()
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    if top.returncode != 0:
+        return set()
+    if Path(top.stdout.strip()).resolve() != root.resolve():
+        return set()
+
+    rels = [p.relative_to(root).as_posix() for p in files]
+    try:
+        completed = subprocess.run(
+            ["git", "check-ignore", "--stdin"],
+            cwd=str(root),
+            input="\n".join(rels) + "\n",
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    if completed.returncode not in {0, 1}:
+        return set()
+    ignored_rels = {line.strip() for line in completed.stdout.splitlines() if line.strip()}
+    return {root / rel for rel in ignored_rels}
 
 
 def _snapshot_files(root: Path) -> dict[Path, float]:
@@ -788,13 +852,18 @@ def _snapshot_files(root: Path) -> dict[Path, float]:
     written/modified by a run."""
     if not root.exists():
         return {}
-    snap: dict[Path, float] = {}
+    candidates: list[Path] = []
     for p in root.rglob("*"):
         if not p.is_file():
             continue
-        if any(part in _ATTACH_SKIP_DIR_NAMES for part in p.relative_to(root).parts):
+        if _is_local_artifact(p, root):
             continue
-        if p.name in _ATTACH_SKIP_NAMES:
+        candidates.append(p)
+
+    ignored = _git_ignored_files(root, candidates)
+    snap: dict[Path, float] = {}
+    for p in candidates:
+        if p in ignored:
             continue
         try:
             snap[p] = p.stat().st_mtime
