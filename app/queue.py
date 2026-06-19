@@ -318,6 +318,24 @@ def list_active_for_ticket(db_path: Path, ticket_id: str) -> list[Job]:
     return [_row_to_job(r) for r in rows]
 
 
+def list_jobs(db_path: Path, statuses: tuple[str, ...] | None = None) -> list[Job]:
+    """Return queue jobs ordered for operator/status views."""
+    if statuses:
+        placeholders = ",".join("?" for _ in statuses)
+        query = f"""
+            SELECT * FROM jobs
+            WHERE status IN ({placeholders})
+            ORDER BY created_at ASC, id ASC
+        """
+        params: tuple[str, ...] = statuses
+    else:
+        query = "SELECT * FROM jobs ORDER BY created_at ASC, id ASC"
+        params = ()
+    with _connect(db_path) as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_row_to_job(r) for r in rows]
+
+
 def reset_stale_running(db_path: Path) -> int:
     """Boot-time recovery: any row left as ``running`` (because the previous
     process was killed mid-execution) is returned to the queue as pending so
