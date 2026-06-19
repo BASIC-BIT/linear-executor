@@ -23,7 +23,7 @@ load_dotenv(dotenv_path=ENV_PATH, override=True, encoding="utf-8-sig")
 from app import job_registry  # noqa: E402
 from app import linear_api  # noqa: E402
 from app import queue as q  # noqa: E402
-from app.status import build_status  # noqa: E402
+from app.status import build_dashboard_status  # noqa: E402
 from app.filter import (  # noqa: E402
     is_proxy_ticket,
     should_cancel_run,
@@ -125,7 +125,7 @@ def create_app() -> FastAPI:
 
     @app.get("/status")
     async def status():
-        return build_status(db_path)
+        return build_dashboard_status(db_path)
 
     @app.post("/webhook")
     async def webhook(request: Request):
