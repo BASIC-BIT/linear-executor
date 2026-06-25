@@ -57,6 +57,20 @@ RISK_PATH_PARTS = {
     "signature",
     "worker",
 }
+RISK_MODULE_PATHS = {
+    "app/attachments.py",
+    "app/cli_registry.py",
+    "app/filter.py",
+    "app/git_ops.py",
+    "app/linear_api.py",
+    "app/main.py",
+    "app/orchestrator.py",
+    "app/queue.py",
+    "app/readiness_arbiter.py",
+    "app/runner.py",
+    "app/signature.py",
+    "app/worker.py",
+}
 ARTIFACT_PATTERNS = (
     ".env",
     "jobs.db",
@@ -69,9 +83,11 @@ ARTIFACT_PATTERNS = (
     "proxy-outputs/",
     ".claude/",
 )
-PASS_PATTERNS = ("tests passed", "pytest passed", "all tests passed", "exit code 0", "green")
-FAIL_PATTERNS = ("tests failed", "pytest failed", "exit code 1", "traceback", "failed checks", "red")
+PASS_PATTERNS = ("tests passed", "pytest passed", "all tests passed", "exit code 0")
+FAIL_PATTERNS = ("tests failed", "pytest failed", "exit code 1", "traceback", "failed checks")
 MISSING_TEST_PATTERNS = ("tests not run", "not run", "missing tests", "skipped tests", "no tests")
+PASS_REGEXES = (r"\b\d+\s+passed\b",)
+FAIL_REGEXES = (r"\b\d+\s+failed\b", r"\b\d+\s+errors?\b")
 
 
 @dataclass(frozen=True)
@@ -186,6 +202,11 @@ def _diff_files(repo_path: Path, base_ref: str, candidate_ref: str) -> list[Chan
     return _parse_numstat(output)
 
 
+def _worktree_dirty(repo_path: Path) -> bool:
+    output = _git_text(["status", "--porcelain", "--untracked-files=normal"], repo_path)
+    return bool(output.strip())
+
+
 def _category_for(path: str) -> str:
     normalized = path.replace("\\", "/")
     name = Path(normalized).name
@@ -217,6 +238,8 @@ def _is_docs_only(stats: DiffStats) -> bool:
 
 def _is_runtime_sensitive(path: str) -> bool:
     normalized = path.replace("\\", "/").lower()
+    if normalized in RISK_MODULE_PATHS:
+        return True
     parts = set(re.split(r"[/._-]+", normalized))
     if normalized.startswith("app/") and (parts & RISK_PATH_PARTS):
         return True
@@ -231,6 +254,10 @@ def _artifact_hits(text: str) -> list[str]:
 def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
     lowered = text.lower()
     return any(pattern in lowered for pattern in patterns)
+
+
+def _matches_evidence(text: str, patterns: tuple[str, ...], regexes: tuple[str, ...]) -> bool:
+    return _contains_any(text, patterns) or any(re.search(pattern, text, re.IGNORECASE) for pattern in regexes)
 
 
 def _read_optional_text(path: Path | None, inline_text: str | None) -> str:
@@ -273,10 +300,22 @@ def _walk_registry(value: Any) -> RegistryEvidence:
     return RegistryEvidence(local_review_ran, accepted_findings_unresolved)
 
 
-def _registry_evidence(path: Path | None) -> RegistryEvidence:
+def _registry_evidence(path: Path | None, ticket: str) -> RegistryEvidence:
     if path is None:
         return RegistryEvidence()
-    return _walk_registry(json.loads(path.read_text(encoding="utf-8")))
+    parsed = json.loads(path.read_text(encoding="utf-8"))
+    ticket_key = ticket.lower()
+    if isinstance(parsed, dict):
+        for key in ("tickets", "issues", "branches"):
+            records = parsed.get(key)
+            if isinstance(records, dict):
+                for record_key, record_value in records.items():
+                    if str(record_key).lower() == ticket_key:
+                        return _walk_registry(record_value)
+        for record_key, record_value in parsed.items():
+            if str(record_key).lower() == ticket_key:
+                return _walk_registry(record_value)
+    return RegistryEvidence()
 
 
 def _evidence_signals(
@@ -284,14 +323,17 @@ def _evidence_signals(
     evidence_path: Path | None,
     evidence_text: str | None,
     registry_path: Path | None,
+    ticket: str,
 ) -> EvidenceSignals:
     evidence = _read_optional_text(evidence_path, evidence_text)
-    registry = _registry_evidence(registry_path)
+    registry = _registry_evidence(registry_path, ticket)
     accepted_unresolved = registry.accepted_findings_unresolved or "accepted findings unresolved" in evidence.lower()
     local_review_ran = registry.local_review_ran or "local review passed" in evidence.lower()
+    tests_failed = _matches_evidence(evidence, FAIL_PATTERNS, FAIL_REGEXES)
+    tests_passed = _matches_evidence(evidence, PASS_PATTERNS, PASS_REGEXES) and not tests_failed
     return EvidenceSignals(
-        tests_passed=_contains_any(evidence, PASS_PATTERNS) and not _contains_any(evidence, FAIL_PATTERNS),
-        tests_failed=_contains_any(evidence, FAIL_PATTERNS),
+        tests_passed=tests_passed,
+        tests_failed=tests_failed,
         tests_missing=_contains_any(evidence, MISSING_TEST_PATTERNS),
         local_review_ran=local_review_ran,
         accepted_findings_unresolved=accepted_unresolved,
@@ -329,16 +371,14 @@ def _review_recommendation(decision: Decision, risk: Risk) -> str:
 
 
 def _paid_review(decision: Decision, complexity: Complexity, risk: Risk) -> str:
-    if decision == "paid_public_review_candidate" or (complexity == "high" and risk in {"medium", "high"}):
+    _ = (complexity, risk)
+    if decision == "paid_public_review_candidate":
         return "candidate_after_human_approval"
     return "not_recommended"
 
 
 def _markdown_summary(result: ReadinessDecision) -> str:
     lines = [
-        f"**Decision:** `{result.decision}`",
-        f"**Risk:** `{result.risk}`  **Complexity:** `{result.complexity}`",
-        "",
         "**Findings**",
     ]
     if result.reasons:
@@ -347,6 +387,9 @@ def _markdown_summary(result: ReadinessDecision) -> str:
         lines.append("- No blocking findings detected.")
     lines.extend(
         [
+            "",
+            f"**Decision:** `{result.decision}`",
+            f"**Risk:** `{result.risk}`  **Complexity:** `{result.complexity}`",
             "",
             "**Required Next Steps**",
         ]
@@ -418,10 +461,12 @@ def evaluate_readiness(
 
     files = _diff_files(repo_path, base_ref, candidate_ref)
     stats = _diff_stats(files)
+    dirty_explicit_candidate = candidate_ref != "HEAD" and _worktree_dirty(repo_path)
     evidence = _evidence_signals(
         evidence_path=evidence_path,
         evidence_text=evidence_text,
         registry_path=integration_registry_path,
+        ticket=ticket,
     )
     complexity = _complexity(stats)
     risk = _risk(files, stats, evidence)
@@ -434,6 +479,10 @@ def evaluate_readiness(
     if not files:
         reasons.append("No candidate diff was found against the requested base.")
         required_next_steps.append("Confirm the base and candidate refs point at the intended branches.")
+
+    if dirty_explicit_candidate:
+        reasons.append("Explicit candidate ref was evaluated while the worktree had uncommitted or untracked changes.")
+        required_next_steps.append("Commit, stash, or rerun with the default HEAD candidate so dirty worktree changes are included.")
 
     if "ticket/bas-" in base_ref.lower() or re.search(r"\bBAS-\d+\b", base_ref, re.IGNORECASE):
         reasons.append(f"Candidate is stacked on ticket base `{base_ref}`.")
@@ -475,10 +524,19 @@ def evaluate_readiness(
         reasons.append("Local review evidence indicates review already ran.")
 
     decision: Decision
-    if evidence.tests_failed or evidence.accepted_findings_unresolved or (artifact_hits and (changed_artifacts or not has_bas_106)) or not files:
+    tests_not_trusted = code_or_config and not evidence.tests_passed
+    if (
+        dirty_explicit_candidate
+        or evidence.tests_failed
+        or evidence.accepted_findings_unresolved
+        or (artifact_hits and (changed_artifacts or not has_bas_106))
+        or not files
+    ):
         decision = "human_input_needed"
     elif artifact_hits:
         decision = "human_review_required"
+    elif tests_not_trusted:
+        decision = "needs_local_review"
     elif complexity == "high" and risk in {"medium", "high"}:
         decision = "paid_public_review_candidate"
     elif risk == "high":

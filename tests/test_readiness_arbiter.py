@@ -83,6 +83,60 @@ def test_runtime_code_without_local_review_needs_local_review(tmp_path):
     assert result.review_recommendation == "local_general"
 
 
+def test_numeric_pytest_pass_summary_counts_as_test_evidence(tmp_path):
+    repo = _make_repo(tmp_path)
+    _branch(repo, "ticket/BAS-runtime")
+    (repo / "app").mkdir()
+    (repo / "app" / "registry.py").write_text("REGISTRY = {}\n", encoding="utf-8")
+    _commit(repo, "runtime")
+
+    result = evaluate_readiness(
+        ticket="BAS-110",
+        base_ref="main",
+        repo_path=repo,
+        evidence_text="258 passed",
+    )
+
+    assert result.decision == "needs_local_review"
+    assert not any("no passing test evidence" in reason for reason in result.reasons)
+
+
+def test_numeric_pytest_failure_summary_overrides_passed_count(tmp_path):
+    repo = _make_repo(tmp_path)
+    _branch(repo, "ticket/BAS-failed")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "x.md").write_text("# x\n", encoding="utf-8")
+    _commit(repo, "docs")
+
+    result = evaluate_readiness(
+        ticket="BAS-108",
+        base_ref="main",
+        repo_path=repo,
+        evidence_text="1 failed, 257 passed",
+    )
+
+    assert result.decision == "human_input_needed"
+    assert result.risk == "high"
+
+
+def test_negative_green_evidence_does_not_count_as_passed_tests(tmp_path):
+    repo = _make_repo(tmp_path)
+    _branch(repo, "ticket/BAS-runtime")
+    (repo / "app").mkdir()
+    (repo / "app" / "registry.py").write_text("REGISTRY = {}\n", encoding="utf-8")
+    _commit(repo, "runtime")
+
+    result = evaluate_readiness(
+        ticket="BAS-110",
+        base_ref="main",
+        repo_path=repo,
+        evidence_text="CI is not green; local review passed",
+    )
+
+    assert result.decision == "needs_local_review"
+    assert any("no passing test evidence" in reason for reason in result.reasons)
+
+
 def test_stacked_branch_reports_ticket_base(tmp_path):
     repo = _make_repo(tmp_path)
     _branch(repo, "ticket/BAS-106")
@@ -170,6 +224,20 @@ def test_large_runtime_diff_is_paid_public_review_candidate(tmp_path):
     assert result.paid_review == "candidate_after_human_approval"
 
 
+def test_large_runtime_diff_without_tests_needs_local_review_not_paid_review(tmp_path):
+    repo = _make_repo(tmp_path)
+    _branch(repo, "ticket/BAS-large")
+    (repo / "app").mkdir()
+    large = "\n".join(f"VALUE_{i} = {i}" for i in range(900)) + "\n"
+    (repo / "app" / "generated_runtime.py").write_text(large, encoding="utf-8")
+    _commit(repo, "large runtime")
+
+    result = evaluate_readiness(ticket="BAS-108", base_ref="main", repo_path=repo)
+
+    assert result.decision == "needs_local_review"
+    assert result.paid_review == "not_recommended"
+
+
 def test_sensitive_control_plane_file_requires_human_review(tmp_path):
     repo = _make_repo(tmp_path)
     _branch(repo, "ticket/BAS-sensitive")
@@ -188,6 +256,24 @@ def test_sensitive_control_plane_file_requires_human_review(tmp_path):
     assert result.review_recommendation == "human"
 
 
+def test_underscore_sensitive_module_requires_human_review(tmp_path):
+    repo = _make_repo(tmp_path)
+    _branch(repo, "ticket/BAS-git-ops")
+    (repo / "app").mkdir()
+    (repo / "app" / "git_ops.py").write_text("def merge():\n    return True\n", encoding="utf-8")
+    _commit(repo, "git ops")
+
+    result = evaluate_readiness(
+        ticket="BAS-108",
+        base_ref="main",
+        repo_path=repo,
+        evidence_text="tests passed; local review passed",
+    )
+
+    assert result.decision == "human_review_required"
+    assert result.risk == "high"
+
+
 def test_integration_registry_can_record_completed_local_review(tmp_path):
     repo = _make_repo(tmp_path)
     _branch(repo, "ticket/BAS-reviewed")
@@ -195,10 +281,7 @@ def test_integration_registry_can_record_completed_local_review(tmp_path):
     (repo / "app" / "helper.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
     _commit(repo, "code")
     registry = tmp_path / "registry.json"
-    registry.write_text(
-        json.dumps({"tickets": {"BAS-reviewed": {"local_review_status": "passed"}}}),
-        encoding="utf-8",
-    )
+    registry.write_text(json.dumps({"tickets": {"BAS-110": {"local_review_status": "passed"}}}), encoding="utf-8")
 
     result = evaluate_readiness(
         ticket="BAS-110",
@@ -210,6 +293,62 @@ def test_integration_registry_can_record_completed_local_review(tmp_path):
 
     assert result.decision == "local_child_ready"
     assert any("Local review evidence" in reason for reason in result.reasons)
+
+
+def test_integration_registry_ignores_other_ticket_review_status(tmp_path):
+    repo = _make_repo(tmp_path)
+    _branch(repo, "ticket/BAS-reviewed")
+    (repo / "app").mkdir()
+    (repo / "app" / "helper.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+    _commit(repo, "code")
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"tickets": {"BAS-other": {"local_review_status": "passed"}}}), encoding="utf-8")
+
+    result = evaluate_readiness(
+        ticket="BAS-110",
+        base_ref="main",
+        repo_path=repo,
+        evidence_text="tests passed",
+        integration_registry_path=registry,
+    )
+
+    assert result.decision == "needs_local_review"
+    assert not any("Local review evidence" in reason for reason in result.reasons)
+
+
+def test_local_review_without_passing_tests_does_not_make_code_ready(tmp_path):
+    repo = _make_repo(tmp_path)
+    _branch(repo, "ticket/BAS-reviewed")
+    (repo / "app").mkdir()
+    (repo / "app" / "helper.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+    _commit(repo, "code")
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"tickets": {"BAS-110": {"local_review_status": "passed"}}}), encoding="utf-8")
+
+    result = evaluate_readiness(ticket="BAS-110", base_ref="main", repo_path=repo, integration_registry_path=registry)
+
+    assert result.decision == "needs_local_review"
+    assert any("no passing test evidence" in reason for reason in result.reasons)
+
+
+def test_explicit_candidate_blocks_when_worktree_is_dirty(tmp_path):
+    repo = _make_repo(tmp_path)
+    _branch(repo, "ticket/BAS-docs")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "workflow.md").write_text("# Workflow\n", encoding="utf-8")
+    _commit(repo, "docs")
+    (repo / "app").mkdir()
+    (repo / "app" / "orchestrator.py").write_text("dirty = True\n", encoding="utf-8")
+
+    result = evaluate_readiness(
+        ticket="BAS-112",
+        base_ref="main",
+        candidate_ref="ticket/BAS-docs",
+        repo_path=repo,
+    )
+
+    assert result.decision == "human_input_needed"
+    assert any("uncommitted or untracked changes" in reason for reason in result.reasons)
 
 
 def test_cli_writes_json_and_markdown_outputs(tmp_path):
@@ -238,4 +377,4 @@ def test_cli_writes_json_and_markdown_outputs(tmp_path):
     assert exit_code == 0
     data = json.loads(json_out.read_text(encoding="utf-8"))
     assert data["decision"] == "local_child_ready"
-    assert "**Findings**" in md_out.read_text(encoding="utf-8")
+    assert md_out.read_text(encoding="utf-8").startswith("**Findings**")
